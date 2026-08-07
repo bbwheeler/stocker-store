@@ -21,7 +21,7 @@
 - Remove stocks from an exchange.
 - Submit/calculate scores (dynamic categories, normalized -1.0 to 1.0).
 - Historical data with date-bound queries.
-- Thousands of stocks, millions of stock-exchange combinations expected at scale.
+- Thousands of stocks.
 - Self-hostable, simple operations, small footprint (no Kubernetes required for v1).
 
 ---
@@ -51,12 +51,12 @@ The scores table has a composite key composed of the id from the stocks table + 
 | Column      | Type        | Notes                 |
 |-------------|-------------|-----------------------|
 | `id`        | composite   | symbol + exchange. PK |
-| `symbol`    | TEXT        | NOT NULL UNIQUE       |
-| `exchange`  | TEXT        | NOT NULL UNIQUE       |
+| `symbol`    | TEXT        | NOT NULL              |
+| `exchange`  | TEXT        | NOT NULL              |
 | `timestamp` | TIMESTAMPTZ | DEFAULT now()         |
 
 
-Indexes: `(id, exchange)`.
+Indexes: `UNIQUE on (symbol, exchange)`.
 
 #### `scores` — score snapshots
 
@@ -64,11 +64,11 @@ Indexes: `(id, exchange)`.
 |------------------|--------------|------------------------------------------------|
 | `id`             | composite    | PK, stock_id + category                        |
 | `stock_id`       | TEXT         | FK → stocks.id                                 |
-| `category`       | TEXT         | NOT NULL UNIQUE                                |
+| `category`       | TEXT         | NOT NULL.                                      |
 | `value`          | DOUBLE PREC. | CHECK: value BETWEEN -1.0 AND 1.0, DEFAULT 0.0 |
 | `timestamp`      | TIMESTAMPTZ  | NOT NULL                                       |
 
-Indexes: unique constraint on `(stock_id, category)` for current score.
+Indexes: unique constraint on `(stock_id, category)` for current score. composite index on `(category, value DESC)`
 
 ---
 
@@ -76,7 +76,7 @@ Indexes: unique constraint on `(stock_id, category)` for current score.
 
 1. The current active row gets its `value` and `timestamp` updated (in-place).
 2. A new row is written with the previous values for history.
-3. This gives O(1) lookups for "latest score" with complete audit trail.
+3. This gives O(1) lookups for "latest score".
 
 Queries like "score of symbol X on date Y" iterate through the history table to get the score.
 
@@ -198,18 +198,11 @@ On a database this size: `ORDER BY random() LIMIT count`.
 
 Single `stocker-store` binary, no microservice decomposition at this scale. Postgres runs separately or in its own container. No service mesh or sidecars needed — keep it dead simple.
 
-### 7.2 Indexing strategy
+### 7.2 Normalization and validation
 
-| Table            | Index                             | Purpose                            |
-|------------------|-----------------------------------|------------------------------------|
-| `stocks`         | UNIQUE on `symbol`                | Fast symbol lookup                 |
-| `scores`         | UNIQUE on `(stock_id, category)`  | Current score enforcement    |
+All score values get validated client-side via protobuf `double` with a server-side `CHECK(value BETWEEN -1.0 AND 1.0)` constraint. Default is `0.0`.
 
-### 7.3 Normalization and validation
-
-All score values get validated client-side via protobuf `double` with a server-side `CHECK(value BETWEEN -1.0 AND 1.0)` constraint. Default is `0.0`. A scoring category gets created on demand (INSERT … ON CONFLICT DO NOTHING into `score_categories`).
-
-### 7.4 Error handling gRPC errors to return
+### 7.3 Error handling gRPC errors to return
 
 | Scenario                            | gRPC code       |
 |-------------------------------------|---------------------|
@@ -223,7 +216,7 @@ All score values get validated client-side via protobuf `double` with a server-s
 
 ## 8. Data Retention and History
 
-- Score history is unlimited by default.
+- Score history should be pruned beyond a configurable time (eg 1 year)
 - Hard deletes: When a stock is "removed," the `stock_exchanges` row gets deleted.
 
 ---
@@ -255,4 +248,3 @@ None / Not Necessary
 - Batch operations (gRPC streaming AddStock in bulk)
 - Pagination to avoid response limits
 - Category weight presets / templates
-- Export API for downstream analytics
