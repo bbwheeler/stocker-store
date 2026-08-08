@@ -11,4 +11,4 @@ Once you complete any changes, additions, deletions, or modifications, follow th
 3. Open a Pull Request for the changes you just pushed
 4. Add me (bbwheeler) as a reviewer on the Pull Request
 
-Your GitHub credentials can be found in the parent directory (../github.md)
+GitHub CLI is installed, and if you need to authenticate, your GitHub credentials can be found in the parent directory (../github.md)
