@@ -88,7 +88,7 @@ Queries like "score of symbol X on date Y" iterate through the history table to 
 
 | RPC Name           | Request                       | Response                  | Notes                        |
 |--------------------|-------------------------------|---------------------------|------------------------------|
-| AddStock           | `AddStockRequest`             | `Stock`                   | Creates symbol + exchange    |
+| AddStocks          | `stream AddStockRequest`      | `AddStocksResponse`       | Bulk create (client-streaming) |
 | RemoveStock        | `RemoveStockRequest`          | `RemoveStockResponse`     | Delete from exchange         |
 | GetStockBySymbol   | `GetStockBySymbolRequest`     | `Stock`                   | All exchanges or filtered    |
 | GetStocksByExchange| `GetStocksByExchange`         | `List[Stock]`             |                              |
@@ -101,6 +101,7 @@ Queries like "score of symbol X on date Y" iterate through the history table to 
 
 ```protobuf
 message AddStockRequest { string symbol = 1; string exchange = 2; }
+message AddStocksResponse { int32 added = 1; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message GetStockBySymbolRequest { string symbol = 1; optional string exchange = 2; } // nullable
 
@@ -245,6 +246,5 @@ None / Not Necessary
 
 - REST-gateway over gRPC for non-gRPC clients
 - Authentication via mTLS or JWT tokens on the server side
-- Batch operations (gRPC streaming AddStock in bulk)
 - Pagination to avoid response limits
 - Category weight presets / templates
