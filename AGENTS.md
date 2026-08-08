@@ -1,6 +1,6 @@
 ## Beginning Tasks
 Before you begin a task, follow these steps:
-1. Make sure all existing changes have been checked in; if there are existing changes, check them in.
+1. Make sure all existing changes have been checked in; if there are existing changes, check them in and push them to the remote.
 2. Do a git fetch so that you have all of the latest changes.
 3. Switch to a branch or create a branch appropriate for the changes that you will make
 
