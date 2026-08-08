@@ -4,7 +4,7 @@ package stockstore.v1;
 option go_package = "stocker-store/proto/v1;stockstorev1";
 
 service StockStore {
-	rpc AddStock(AddStockRequest) returns (Stock);
+	rpc AddStocks(stream AddStockRequest) returns (AddStocksResponse);
 	rpc RemoveStock(RemoveStockRequest) returns (RemoveStockResponse);
 	rpc GetStockBySymbol(GetStockBySymbolRequest) returns (StockList);
 	rpc GetStocksByExchange(GetStocksByExchangeRequest) returns (StockList);
@@ -15,6 +15,7 @@ service StockStore {
 }
 
 message AddStockRequest { string symbol = 1; string exchange = 2; }
+message AddStocksResponse { int32 added = 1; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message RemoveStockResponse {}
 
