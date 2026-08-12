@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-**Stocker Store** is a gRPC-backed service for managing stock data and multi-dimensional scores. It supports thousands of stocks with weighted scoring queries, and flexible retrieval patterns.
+**Stocker Store** is a gRPC-backed service for managing stock data and scores. It supports thousands of stocks and flexible retrieval patterns.
 
 ```
 ┌───────────┐       Protocol Buffer            ┌──────────────┐    ┌────────────┐
@@ -50,24 +50,25 @@ The scores table has a composite key composed of the id from the stocks table + 
 
 | Column      | Type        | Notes                 |
 |-------------|-------------|-----------------------|
-| `id`        | composite   | symbol + exchange. PK |
 | `symbol`    | TEXT        | NOT NULL              |
 | `exchange`  | TEXT        | NOT NULL              |
-| `timestamp` | TIMESTAMPTZ | DEFAULT now()         |
+| `timestamp` | TIMESTAMPTZ | NOT NULL              |
 
-Indexes: `UNIQUE on (symbol, exchange)`.
+Indexes:
+`id` PRIMARY KEY (`symbol`, `exchange`)
 
 #### `scores` — score snapshots
 
 | Column           | Type         | Notes                                          |
 |------------------|--------------|------------------------------------------------|
-| `id`             | composite    | PK, stock_id + category                        |
 | `stock_id`       | TEXT         | FK → stocks.id                                 |
 | `category`       | TEXT         | NOT NULL.                                      |
 | `value`          | DOUBLE PREC. | CHECK: value BETWEEN -1.0 AND 1.0, DEFAULT 0.0 |
 | `timestamp`      | TIMESTAMPTZ  | NOT NULL                                       |
 
-Indexes: unique constraint on `(stock_id, category)` for current score. composite index on `(category, value DESC)`
+Indexes:
+`id` PRIMARY KEY (`stock_id`, `category`)
+composite index on `(category, value DESC)`
 
 ---
 

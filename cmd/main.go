@@ -3,12 +3,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"stocker-store/internal/data"
 	"stocker-store/internal/grpc"
