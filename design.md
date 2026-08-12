@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-**Stocker Store** is a gRPC-backed service for managing stock data and multi-dimensional scores. It supports thousands of stocks with historical score tracking, weighted scoring queries, and flexible retrieval patterns.
+**Stocker Store** is a gRPC-backed service for managing stock data and multi-dimensional scores. It supports thousands of stocks with weighted scoring queries, and flexible retrieval patterns.
 
 ```
 ┌───────────┐       Protocol Buffer            ┌──────────────┐    ┌────────────┐
@@ -10,9 +10,10 @@
 │ (gRPC     │       & kafka streaming          │              │    │            │
 │  / REST   │       (future)                   └──────────────┘    └────────────┘
 │   proxy ) │                                      golang                    │
-└───────────┘                                                     schema history
-                                                                              tables
-```
+└───────────┘                                                     ┌────────────┐
+                                                                                │ stocks,      │
+                                                                                │ scores     │
+                                                
 
 ## 2. Requirements Summary
 
@@ -20,7 +21,6 @@
 - Submit stocks.
 - Remove stocks from an exchange.
 - Submit/calculate scores (dynamic categories, normalized -1.0 to 1.0).
-- Historical data with date-bound queries.
 - Thousands of stocks.
 - Self-hostable, simple operations, small footprint (no Kubernetes required for v1).
 
@@ -37,12 +37,11 @@
 │ symbol,                             │     │  (id (composite stock_id + category), │
 │   exchange,                         │     │   symbol, exchange, category,         │
 │   timestamp)                        │     │   value, change_timestamp             │
-└─────────────────────────────────────┘     │   history[...])                       │
-                                            └───────────────────────────────────────┘
+└─────────────────────────────────────┘     └───────────────────────────────────────┘
 ```
 The stocks table has a composite key composed of the symbol + the exchange. Other columns include the symbol, the exchange, and the timestamp
 
-The scores table has a composite key composed of the id from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp, and a history of older rows
+The scores table has a composite key composed of the id from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp
 
 ### 3.2 Schema (PostgreSQL)
 
@@ -72,16 +71,6 @@ Indexes: unique constraint on `(stock_id, category)` for current score. composit
 
 ---
 
-### 3.3 Historical data approach
-
-1. The current active row gets its `value` and `timestamp` updated (in-place).
-2. A new row is written with the previous values for history.
-3. This gives O(1) lookups for "latest score".
-
-Queries like "score of symbol X on date Y" iterate through the history table to get the score.
-
----
-
 ## 4. gRPC API Definition (protobuf service)
 
 ### Service: `StockStore`
@@ -93,8 +82,8 @@ Queries like "score of symbol X on date Y" iterate through the history table to 
 | GetStockBySymbol   | `GetStockBySymbolRequest`     | `Stock`                   | All exchanges or filtered    |
 | GetStocksByExchange| `GetStocksByExchange`         | `List[Stock]`             |                              |
 | GetRandomStocks    | `GetRandomStocksRequest`      | `List[Stock]`             | Needs reasonable upper limit |
-| UpdateScore        | `UpdateScoreRequest`          | `ScoreSnapshot`           | Creates/updates score + hist.|
-| GetScores          | `GetScoresRequest`            | `ScoreHistory`            | Latest + optional timebound  |
+| UpdateScore        | `UpdateScoreRequest`          | `ScoreSnapshot`           | Creates/updates score             |
+| GetScores          | `GetScoresRequest`            | `ScoreSnapshot`           | Current snapshot for a stock      |
 | GetTopStocks       | `GetTopStocksRequest`         | `List[StockWithScore]`    | Reasonable upper limit       |
 
 ### Messages (key fields)
@@ -115,7 +104,7 @@ message GetTopStocksRequest { string category = 1; int32 limit = 2; string excha
 
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; }
-message ScoreSnapshot { string category = 1; double value = 2; repeated ScoreHistoryEntry history = 3; }
+message ScoreSnapshot { string category = 1; double value = 2; }
 ```
 
 ---
@@ -159,11 +148,11 @@ On a database this size: `ORDER BY random() LIMIT count`.
 
 | Option          | Verdict      | Why                              |
 |-----------------|--------------|----------------------------------|
-| **PostgreSQL**  | **SELECTED** | Best fit for both OLTP (company/exchange CRUD) and time-series (score history). Self-hostable via Docker Compose. Strong golang driver (`pgx`). |
+| **PostgreSQL**  | **SelecteD** | Best fit for both OLTP (company/exchange CRUD) and scoring analytics. Self-hostable via Docker Compose. Strong golang driver (`pgx`). |
 | Cassandra       | Rejected     | Good for time-series writes at scale but poor on joins needed for "company + exchange + scores" lookups. CQL lacks rich query flexibility for scoring filters. |
 | MongoDB         | Rejected     | Document model maps reasonably well but: (1) no ACID transactions across collections in shared hosting scenarios, (2) weaker indexing for time-series queries vs Timescale, (3) historically higher resource footprint than PostgreSQL. |
 | CouchDB         | Rejected     | Replication is nice but query flexibility is limited (MapReduce views). Not suited for numeric range filters on scores. No continuous aggregation concept. |
-| MariaDB         | Rejected     | Same as Postgres minus the time-series extensions and materialized view capabilities. Would need manual triggers/policies for history retention. |
+| MariaDB         | Rejected     | Same as Postgres minus the table inheritance support that simplifies stock categorization. |
 | SQLite          | Considered   | Zero config, embedded. Works fine at thousands of stocks. **But** no native time-series extensions, limited concurrent write throughput, no self-hosting story if we want separate deployment from the API. |
 | Flat files      | Rejected     | No ACID, no querying, not production-worthy. |
 
@@ -215,9 +204,8 @@ All score values get validated client-side via protobuf `double` with a server-s
 
 ---
 
-## 8. Data Retention and History
+## 8. Data Retention
 
-- Score history should be pruned beyond a configurable time (eg 1 year)
 - Hard deletes: When a stock is "removed," the `stock_exchanges` row gets deleted.
 
 ---

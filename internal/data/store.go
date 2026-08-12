@@ -3,10 +3,26 @@ package data
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Stock represents a stock listed on an exchange.
+type Stock struct {
+	Symbol   string
+	Exchange string
+	Created  time.Time
+}
+
+// ScoreEntry represents a single score record for a stock.
+type ScoreEntry struct {
+	Symbol   string
+	Exchange string
+	Category string
+	Value    float64
+}
 
 // Store handles all PostgreSQL interactions for the stock store service.
 type Store struct {
@@ -31,7 +47,6 @@ func NewStore(ctx context.Context, dsn string) (*Store, error) {
 }
 
 // initializeTables creates the stocks and scores tables if they don't exist.
-// Per the design doc, schema migrations are "not necessary" — we simply DROP and recreate.
 func (s *Store) initializeTables(ctx context.Context) error {
 	stmt := `
 	CREATE TABLE IF NOT EXISTS stocks (
@@ -41,14 +56,19 @@ func (s *Store) initializeTables(ctx context.Context) error {
 		PRIMARY KEY (symbol, exchange)
 	);
 
+	DROP TABLE IF EXISTS scores;
+
 	CREATE TABLE IF NOT EXISTS scores (
-		stock_id  TEXT             NOT NULL REFERENCES stocks(symbol, exchange),
-		category  TEXT             NOT NULL,
-		value     DOUBLE PRECISION CHECK(value BETWEEN -1.0 AND 1.0) DEFAULT 0.0,
+		symbol   TEXT             NOT NULL,
+		exchange TEXT             NOT NULL,
+		category TEXT             NOT NULL,
+		value    DOUBLE PRECISION CHECK(value BETWEEN -1.0 AND 1.0) DEFAULT 0.0,
 		timestamp TIMESTAMPTZ      NOT NULL DEFAULT now(),
-		UNIQUE (stock_id, category)
+		UNIQUE (symbol, exchange, category),
+		FOREIGN KEY (symbol, exchange) REFERENCES stocks(symbol, exchange)
 	);
 
+	DROP INDEX IF EXISTS idx_scores_category_value;
 	CREATE INDEX IF NOT EXISTS idx_scores_category_value ON scores(category, value DESC);
 	`
 
@@ -60,28 +80,30 @@ func (s *Store) initializeTables(ctx context.Context) error {
 }
 
 // InsertStock adds a new stock to the stocks table.
-func (s *Store) InsertStock(ctx context.Context, symbol, exchange string) error {
+// It returns true if the row was inserted (vs skipped by ON CONFLICT).
+func (s *Store) InsertStock(ctx context.Context, symbol, exchange string) (bool, error) {
 	query := `INSERT INTO stocks (symbol, exchange) VALUES ($1, $2) ON CONFLICT DO NOTHING`
-	if _, err := s.pool.Exec(ctx, query, symbol, exchange); err != nil {
-		return fmt.Errorf("insert stock: %w", err)
+	result, err := s.pool.Exec(ctx, query, symbol, exchange)
+	if err != nil {
+		return false, fmt.Errorf("insert stock: %w", err)
 	}
-	return nil
+	return result.RowsAffected() > 0, nil
 }
 
-// StockByID retrieves a single stock by its symbol (exchange can be filtered).
-func (s *Store) StockByID(ctx context.Context, symbol string, exchange *string) (*Stock, error) {
+// StockBySymbol retrieves a single stock by its symbol (exchange can be filtered).
+func (s *Store) StockBySymbol(ctx context.Context, symbol string, exchange *string) (*Stock, error) {
 	query := "SELECT symbol, exchange, timestamp FROM stocks WHERE symbol = $1"
 	args := []interface{}{symbol}
 
 	if exchange != nil {
-		query += " AND exchange = $" + fmt.Sprintf("%d", len(args)+1)
+		query += " AND exchange = coalesce($2, exchange)"
 		args = append(args, *exchange)
 	}
 
 	var stock Stock
 	err := s.pool.QueryRow(ctx, query, args...).Scan(&stock.Symbol, &stock.Exchange, &stock.Created)
 	if err != nil {
-		return nil, fmt.Errorf("get stock by id: %w", err)
+		return nil, fmt.Errorf("get stock by symbol: %w", err)
 	}
 
 	return &stock, nil
@@ -94,25 +116,50 @@ func (s *Store) StocksByExchange(ctx context.Context, exchange string) ([]Stock,
 		return nil, fmt.Errorf("list stocks by exchange: %w", err)
 	}
 
-	all, err := pgx.CollectRows(rows, pgx.RowToStructedByName[Stock])
-	return all, err
+	defer rows.Close()
+
+	var all []Stock
+	for rows.Next() {
+		var stock Stock
+		if err := rows.Scan(&stock.Symbol, &stock.Exchange, &stock.Created); err != nil {
+			return nil, fmt.Errorf("scan stock row: %w", err)
+		}
+		all = append(all, stock)
+	}
+
+	return all, nil
 }
 
-// DeleteStock removes a stock from the database.
+// DeleteStock removes a stock and its associated score entries (cascading delete).
 func (s *Store) DeleteStock(ctx context.Context, symbol string) error {
-	var sb strings.Builder
-	sb.WriteString("DELETE FROM stocks WHERE symbol = $1")
 
-	rows, err := pgx.CollectRows(rows, pgx.RowToStructedByName[ScoreEntry]) // score entries for this stock
-	return rows, err // return scores
-
-	
-Query  return StockList
-
+	return tx.Commit(ctx)
 }
 
-// ListStocksByCategory returns all stocks and their scores.
+// ListStocksByCategory returns all stocks and their scores for a given category.
 func (s *Store) ListStocksByCategory(ctx context.Context, category string) ([]ScoreValue, error) {
-	return []ScoreValue{}, nil // TODO - implement based on design doc
-	
+	const query = `
+		SELECT s.symbol, s.exchange, sc.category, sc.value
+		FROM scores sc
+		JOIN stocks s ON s.symbol = sc.symbol AND s.exchange = sc.exchange
+		WHERE sc.category = $1
+		ORDER BY sc.value DESC`
+
+	rows, err := s.pool.Query(ctx, query, category)
+	if err != nil {
+		return nil, fmt.Errorf("list stocks by category: %w", err)
+	}
+
+	defer rows.Close()
+
+	var results []ScoreValue
+	for rows.Next() {
+		var sv ScoreValue
+		if err := rows.Scan(&sv.Symbol, &sv.Exchange, &sv.Category, &sv.Value); err != nil {
+			return nil, fmt.Errorf("scan score row: %w", err)
+		}
+		results = append(results, sv)
+	}
+
+	return results, nil
 }

@@ -10,7 +10,7 @@ service StockStore {
 	rpc GetStocksByExchange(GetStocksByExchangeRequest) returns (StockList);
 	rpc GetRandomStocks(GetRandomStocksRequest) returns (StockList);
 	rpc UpdateScore(UpdateScoreRequest) returns (ScoreSnapshot);
-	rpc GetScores(GetScoresRequest) returns (ScoreHistory);
+	rpc GetScores(GetScoresRequest) returns (ScoreSnapshot);
 	rpc GetTopStocks(GetTopStocksRequest) returns (StockWithScoreList);
 }
 
@@ -52,9 +52,6 @@ message UpdateScoreRequest {
 }
 
 message ScoreSnapshot { string category = 1; double value = 2; }
-
-message ScoreHistoryEntry { double value = 1; int64 timestamp_unix = 2; }
-message ScoreHistory { repeated ScoreHistoryEntry history = 1; int64 as_of_unix = 2; }
 
 message StockWithScore { string symbol = 1; string exchange = 2; double score = 3; }
 message StockWithScoreList { repeated StockWithScore stocks = 1; }
