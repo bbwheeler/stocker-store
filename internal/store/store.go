@@ -1,28 +1,11 @@
-package data
+package store
 
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// Stock represents a stock listed on an exchange.
-type Stock struct {
-	Symbol   string
-	Exchange string
-	Created  time.Time
-}
-
-// ScoreEntry represents a single score record for a stock.
-type ScoreEntry struct {
-	Symbol   string
-	Exchange string
-	Category string
-	Value    float64
-}
 
 // Store handles all PostgreSQL interactions for the stock store service.
 type Store struct {
@@ -56,8 +39,6 @@ func (s *Store) initializeTables(ctx context.Context) error {
 		PRIMARY KEY (symbol, exchange)
 	);
 
-	DROP TABLE IF EXISTS scores;
-
 	CREATE TABLE IF NOT EXISTS scores (
 		symbol   TEXT             NOT NULL,
 		exchange TEXT             NOT NULL,
@@ -68,7 +49,6 @@ func (s *Store) initializeTables(ctx context.Context) error {
 		FOREIGN KEY (symbol, exchange) REFERENCES stocks(symbol, exchange)
 	);
 
-	DROP INDEX IF EXISTS idx_scores_category_value;
 	CREATE INDEX IF NOT EXISTS idx_scores_category_value ON scores(category, value DESC);
 	`
 
@@ -79,15 +59,10 @@ func (s *Store) initializeTables(ctx context.Context) error {
 	return nil
 }
 
-// InsertStock adds a new stock to the stocks table.
-// It returns true if the row was inserted (vs skipped by ON CONFLICT).
-func (s *Store) InsertStock(ctx context.Context, symbol, exchange string) (bool, error) {
-	query := `INSERT INTO stocks (symbol, exchange) VALUES ($1, $2) ON CONFLICT DO NOTHING`
-	result, err := s.pool.Exec(ctx, query, symbol, exchange)
-	if err != nil {
-		return false, fmt.Errorf("insert stock: %w", err)
-	}
-	return result.RowsAffected() > 0, nil
+// UpsertStock adds or updates a new stock in the stocks table.
+// It returns true if the row was inserted.
+func (s *Store) UpsertStock(ctx context.Context, symbol, exchange string) (bool, error) {
+	// TODO
 }
 
 // StockBySymbol retrieves a single stock by its symbol (exchange can be filtered).
@@ -105,6 +80,8 @@ func (s *Store) StockBySymbol(ctx context.Context, symbol string, exchange *stri
 	if err != nil {
 		return nil, fmt.Errorf("get stock by symbol: %w", err)
 	}
+
+	// TODO: Include the scores
 
 	return &stock, nil
 }
@@ -127,39 +104,13 @@ func (s *Store) StocksByExchange(ctx context.Context, exchange string) ([]Stock,
 		all = append(all, stock)
 	}
 
+	// TODO: Include the scores
+
 	return all, nil
 }
 
 // DeleteStock removes a stock and its associated score entries (cascading delete).
 func (s *Store) DeleteStock(ctx context.Context, symbol string) error {
-
+	// TODO
 	return tx.Commit(ctx)
-}
-
-// ListStocksByCategory returns all stocks and their scores for a given category.
-func (s *Store) ListStocksByCategory(ctx context.Context, category string) ([]ScoreValue, error) {
-	const query = `
-		SELECT s.symbol, s.exchange, sc.category, sc.value
-		FROM scores sc
-		JOIN stocks s ON s.symbol = sc.symbol AND s.exchange = sc.exchange
-		WHERE sc.category = $1
-		ORDER BY sc.value DESC`
-
-	rows, err := s.pool.Query(ctx, query, category)
-	if err != nil {
-		return nil, fmt.Errorf("list stocks by category: %w", err)
-	}
-
-	defer rows.Close()
-
-	var results []ScoreValue
-	for rows.Next() {
-		var sv ScoreValue
-		if err := rows.Scan(&sv.Symbol, &sv.Exchange, &sv.Category, &sv.Value); err != nil {
-			return nil, fmt.Errorf("scan score row: %w", err)
-		}
-		results = append(results, sv)
-	}
-
-	return results, nil
 }

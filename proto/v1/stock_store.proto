@@ -4,54 +4,18 @@ package stockstore.v1;
 option go_package = "stocker-store/proto/v1;stockstorev1";
 
 service StockStore {
-	rpc AddStocks(stream AddStockRequest) returns (AddStocksResponse);
+	rpc AddStocks(stream UpdateStockRequest) returns (Stock);
+	rpc UpdateStock(UpdateStockRequest) returns (Stock);
 	rpc RemoveStock(RemoveStockRequest) returns (RemoveStockResponse);
-	rpc GetStockBySymbol(GetStockBySymbolRequest) returns (StockList);
-	rpc GetStocksByExchange(GetStocksByExchangeRequest) returns (StockList);
-	rpc GetRandomStocks(GetRandomStocksRequest) returns (StockList);
-	rpc UpdateScore(UpdateScoreRequest) returns (ScoreSnapshot);
-	rpc GetScores(GetScoresRequest) returns (ScoreSnapshot);
-	rpc GetTopStocks(GetTopStocksRequest) returns (StockWithScoreList);
+	rpc GetStock(GetStockRequest) returns (Stock);
+	rpc GetStocks(GetStocksRequest) returns (StockList);
 }
 
-message AddStockRequest { string symbol = 1; string exchange = 2; }
-message AddStocksResponse { int32 added = 1; }
+message UpdateStockRequest { string symbol = 1; string exchange = 2; optional map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
-message RemoveStockResponse {}
-
-message GetStockBySymbolRequest { string symbol = 1; optional string exchange = 2; }
-message GetStocksByExchangeRequest { string exchange = 1; }
-
-message GetRandomStocksRequest {
-	string exchange = 1;
-	int32 count = 2;
-	map<string, double> score_filters = 3;
-}
-
-message GetTopStocksRequest {
-	string category = 1;
-	int32 limit = 2;
-	optional string exchange = 3;
-}
-
-message Stock {
-	string symbol = 1;
-	string exchange = 2;
-	repeated ScoreEntry scores = 3;
-}
-
-message StockList { repeated Stock stocks = 1; }
-
+message GetStockRequest { string symbol = 1; optional string exchange = 2; }
+message GetStocksRequest { int32 limit = 1; optional string exchange = 2; optional map<string, double> min_scores = 3; optional map<string, double> max_scores = 4; }
+message RemoveStocksResponse { bool removed = 1; }
+message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; }
-
-message UpdateScoreRequest {
-	string symbol = 1;
-	string exchange = 2;
-	string category = 3;
-	double value = 4;
-}
-
-message ScoreSnapshot { string category = 1; double value = 2; }
-
-message StockWithScore { string symbol = 1; string exchange = 2; double score = 3; }
-message StockWithScoreList { repeated StockWithScore stocks = 1; }
+message StockList { repeated Stock stocks = 1; }
