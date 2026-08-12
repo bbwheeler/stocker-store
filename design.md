@@ -11,18 +11,19 @@
 │  / REST   │       (future)                   └──────────────┘    └────────────┘
 │   proxy ) │                                      golang                    │
 └───────────┘                                                     ┌────────────┐
-                                                                                │ stocks,      │
-                                                                                │ scores     │
-                                                
+                                                                  │ stocks,    │
+                                                                  │ scores     │
+                                                                  └────────────┘
 
 ## 2. Requirements Summary
 
-- Retrieve stocks by: symbol, exchange, random (with filters), score range, top-score, weighted-score.
+- Retrieve stocks by: symbol, exchange, random (with filters), score ranges
 - Submit stocks.
 - Remove stocks from an exchange.
-- Submit/calculate scores (dynamic categories, normalized -1.0 to 1.0).
+- Submit scores (dynamic categories, normalized -1.0 to 1.0).
 - Thousands of stocks.
-- Self-hostable, simple operations, small footprint (no Kubernetes required for v1).
+- Self-hostable using Podman Quadlets
+- simple, concise
 
 ---
 
@@ -54,7 +55,6 @@ The scores table has a composite key composed of the id from the stocks table + 
 | `exchange`  | TEXT        | NOT NULL              |
 | `timestamp` | TIMESTAMPTZ | DEFAULT now()         |
 
-
 Indexes: `UNIQUE on (symbol, exchange)`.
 
 #### `scores` — score snapshots
@@ -75,36 +75,24 @@ Indexes: unique constraint on `(stock_id, category)` for current score. composit
 
 ### Service: `StockStore`
 
-| RPC Name           | Request                       | Response                  | Notes                        |
-|--------------------|-------------------------------|---------------------------|------------------------------|
-| AddStocks          | `stream AddStockRequest`      | `AddStocksResponse`       | Bulk create (client-streaming) |
-| RemoveStock        | `RemoveStockRequest`          | `RemoveStockResponse`     | Delete from exchange         |
-| GetStockBySymbol   | `GetStockBySymbolRequest`     | `Stock`                   | All exchanges or filtered    |
-| GetStocksByExchange| `GetStocksByExchange`         | `List[Stock]`             |                              |
-| GetRandomStocks    | `GetRandomStocksRequest`      | `List[Stock]`             | Needs reasonable upper limit |
-| UpdateScore        | `UpdateScoreRequest`          | `ScoreSnapshot`           | Creates/updates score             |
-| GetScores          | `GetScoresRequest`            | `ScoreSnapshot`           | Current snapshot for a stock      |
-| GetTopStocks       | `GetTopStocksRequest`         | `List[StockWithScore]`    | Reasonable upper limit       |
+| RPC Name           | Request                       | Response                  | Notes                          |
+|--------------------|-------------------------------|---------------------------|--------------------------------|
+| AddStocks          | `stream UpdateStockRequest`   | `Stock`                   | Bulk create (client-streaming) |
+| UpdateStock        |.`UpdateStockRequest`          | `Stock`                   | single create/update           |
+| RemoveStock        | `RemoveStockRequest`          | `RemoveStockResponse`     | Delete from exchange           |
+| GetStock           | `GetStockRequest`             | `Stock`                   | All exchanges or filtered      |
+| GetStocks          | `GetStocksRequest`            | `List[Stock]`             | Gets Random List of Stocks     |
 
 ### Messages (key fields)
 
 ```protobuf
-message AddStockRequest { string symbol = 1; string exchange = 2; }
-message AddStocksResponse { int32 added = 1; }
+message UpdateStockRequest { string symbol = 1; string exchange = 2; optional map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
-message GetStockBySymbolRequest { string symbol = 1; optional string exchange = 2; } // nullable
-
-message UpdateScoreRequest { string symbol = 1; string exchange = 2; string category = 3; double value = 4; }
-message GetScoresRequest { string symbol = 1; string exchange = 2; string category = 3; optional google.protobuf.Timestamp date = 4; }
-
-message GetRandomStocksRequest { string exchange = 1; int32 count = 2; map<string, double> score_filters = 3; }
-// score_filters: "category_y => min_value" — filters to stocks with score > min in that category
-
-message GetTopStocksRequest { string category = 1; int32 limit = 2; string exchange = 3; } // exchange optional
-
+message GetStockRequest { string symbol = 1; optional string exchange = 2; }
+message GetStocksRequest { int32 limit = 1; optional string exchange = 2; optional map<string, double> min_scores = 3; optional map<string, double> max_scores = 4; }
+message RemoveStocksResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; }
-message ScoreSnapshot { string category = 1; double value = 2; }
 ```
 
 ---
@@ -117,19 +105,11 @@ Simple lookup: `stocks.symbol + stocks.exchange` → scores in single query.
 
 ### 5.2 By exchange
 
-SELECT * FROM stocks WHERE exchange = $1 ORDER BY stocks.symbol
-
-### 5.3 Random stocks
-
-On a database this size: `ORDER BY random() LIMIT count`.
+SELECT * FROM stocks WHERE exchange = $1 ORDER BY RANDOM()
 
 ### 5.4 By score range
 
-`WHERE score.value BETWEEN min_val AND max_val AND score.category = $1`.
-
-### 5.5 Top-score
-
-`ORDER BY score.value DESC LIMIT x`. Simple index-sorted scan on `(category, value DESC)`.
+`WHERE score.value BETWEEN min_val AND max_val AND score.category = $1`
 
 ---
 
@@ -140,36 +120,26 @@ On a database this size: `ORDER BY random() LIMIT count`.
 | Option      | Verdict     | Why                              |
 |-------------|-------------|----------------------------------|
 | **Go**      | **SELECTED**| Strong gRPC ecosystem (gRPC-Go), compiled, single binary deployment, small memory footprint (~10 MB per server), fast at scale, excellent concurrency model. |
-| Python      | Rejected    | Slower at scale, gRPC support works but runtime overhead is higher. Async gRPC is immature. Good for prototyping (v1 of scoring engine maybe) but not ideal long-term. |
-| Java        | Rejected    | Heavy heap (~300 MB minimum), slow startup, overkill for this workload complexity. |
-| Rust        | Considered  | Fantastic performance but no first-class gRPC support that's as mature as Go/Java. tonic-rs exists but ecosystem is less battle-tested. |
 
 ### 6.2 Database
 
 | Option          | Verdict      | Why                              |
 |-----------------|--------------|----------------------------------|
-| **PostgreSQL**  | **SelecteD** | Best fit for both OLTP (company/exchange CRUD) and scoring analytics. Self-hostable via Docker Compose. Strong golang driver (`pgx`). |
-| Cassandra       | Rejected     | Good for time-series writes at scale but poor on joins needed for "company + exchange + scores" lookups. CQL lacks rich query flexibility for scoring filters. |
-| MongoDB         | Rejected     | Document model maps reasonably well but: (1) no ACID transactions across collections in shared hosting scenarios, (2) weaker indexing for time-series queries vs Timescale, (3) historically higher resource footprint than PostgreSQL. |
-| CouchDB         | Rejected     | Replication is nice but query flexibility is limited (MapReduce views). Not suited for numeric range filters on scores. No continuous aggregation concept. |
-| MariaDB         | Rejected     | Same as Postgres minus the table inheritance support that simplifies stock categorization. |
-| SQLite          | Considered   | Zero config, embedded. Works fine at thousands of stocks. **But** no native time-series extensions, limited concurrent write throughput, no self-hosting story if we want separate deployment from the API. |
-| Flat files      | Rejected     | No ACID, no querying, not production-worthy. |
+| **PostgreSQL**  | **SELECTED** | Best fit for both OLTP (company/exchange CRUD) and scoring analytics. Self-hostable via Docker Compose. Strong golang driver (`pgx`). |
 
 ### 6.3 Caching Layer
 
 | Option                        | Verdict      | Why                              |
 |-------------------------------|--------------|----------------------------------|
 | None (cache-miss to Postgres) | **SELECTED initially** | At thousands of stocks, Postgres can handle the read load with proper indexing. Redis adds operational complexity not yet justified by performance needs. Add later if needed. |
-| Redis           | Deferred    | Excellent for hot score lookups and random stock pre-computation. Adds one more infrastructure dependency. Consider when QPS > 1000 sustained. |
 
 ### 6.4 Additional Infrastructure
 
 | Component        | Choice                | Notes                            |
 |------------------|-----------------------|----------------------------------|
 | Config/Discovery | file-based config     | Fine for v1. |
-| Schema migration | None | We can afford to lose historic data, just Drop and recreate the table |
-| Container orchestration | Podman Quadlets (v1), Kubernetes later | Keep v1 minimal. |
+| Schema migration | None | We can afford to lose  all data, just Drop and recreate the table |
+| Container orchestration | Podman Quadlets | Keep v1 minimal. |
 | Observability | OpenTelemetry, Prometheus metrics, structured logging | Standard Go ecosystem. |
 
 ---
@@ -186,7 +156,7 @@ On a database this size: `ORDER BY random() LIMIT count`.
                     └──────────────┘
 ```
 
-Single `stocker-store` binary, no microservice decomposition at this scale. Postgres runs separately or in its own container. No service mesh or sidecars needed — keep it dead simple.
+Single `stocker-store` binary. Postgres runs separately or in its own container.
 
 ### 7.2 Normalization and validation
 
@@ -196,7 +166,6 @@ All score values get validated client-side via protobuf `double` with a server-s
 
 | Scenario                            | gRPC code       |
 |-------------------------------------|---------------------|
-| Symbol already exists               | ALREADY_EXISTS      |
 | Stock not found                     | NOT_FOUND           |
 | Invalid score value                 | INVALID_ARGUMENT    |
 | Database failure                    | INTERNAL + retry    |
@@ -232,7 +201,4 @@ None / Not Necessary
 
 ## 11. Future Extensions
 
-- REST-gateway over gRPC for non-gRPC clients
-- Authentication via mTLS or JWT tokens on the server side
 - Pagination to avoid response limits
-- Category weight presets / templates
