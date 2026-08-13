@@ -29,6 +29,9 @@ func NewStore(ctx context.Context, dsn string) (*Store, error) {
 	return store, nil
 }
 
+// Close releases the underlying connection pool.
+func (s *Store) Close() { s.pool.Close() }
+
 // initializeTables creates the stocks and scores tables if they don't exist.
 func (s *Store) initializeTables(ctx context.Context) error {
 	stmt := `
@@ -59,20 +62,85 @@ func (s *Store) initializeTables(ctx context.Context) error {
 	return nil
 }
 
-// UpsertStock adds or updates a new stock in the stocks table.
-// It returns true if the row was inserted.
-func (s *Store) UpsertStock(ctx context.Context, symbol, exchange string) (bool, error) {
-	// TODO
+// UpdateStock updates a stock and optionally its scores. Returns the updated stock record.
+func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*Stock, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO stocks (symbol, exchange, timestamp)
+		VALUES ($1, $2, now())
+		ON CONFLICT (symbol, exchange) DO UPDATE SET timestamp = now()
+	`, symbol, exchange)
+	if err != nil {
+		return nil, fmt.Errorf("update stock: %w", err)
+	}
+
+	if len(scores) > 0 {
+		upsertScore := `
+			INSERT INTO scores (symbol, exchange, category, value, timestamp)
+			VALUES ($1, $2, $3, $4, now())
+			ON CONFLICT (symbol, exchange, category)
+			DO UPDATE SET value = EXCLUDED.value, timestamp = now()
+		`
+
+		for cat, val := range scores {
+			if _, err := tx.Exec(ctx, upsertScore, symbol, exchange, cat, val); err != nil {
+				return nil, fmt.Errorf("upsert score %s: %w", cat, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	stock := &Stock{Symbol: symbol, Exchange: exchange}
+	stock.Scores, err = s.getStockScores(ctx, symbol, exchange)
+	if err != nil {
+		return nil, fmt.Errorf("get stock scores after update: %w", err)
+	}
+
+	return stock, nil
 }
 
-// StockBySymbol retrieves a single stock by its symbol (exchange can be filtered).
-func (s *Store) StockBySymbol(ctx context.Context, symbol string, exchange *string) (*Stock, error) {
+// RemoveStock removes a stock and its scores by symbol and exchange. Returns true if anything was removed.
+func (s *Store) RemoveStock(ctx context.Context, symbol, exchange string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM scores WHERE symbol = $1 AND exchange = $2`, symbol, exchange); err != nil {
+		return false, fmt.Errorf("delete scores: %w", err)
+	}
+
+	result, err := tx.Exec(ctx, `DELETE FROM stocks WHERE symbol = $1 AND exchange = $2`, symbol, exchange)
+	if err != nil {
+		return false, fmt.Errorf("delete stock: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return result.RowsAffected() > 0, nil
+}
+
+// GetStock retrieves a single stock by symbol with optional exchange filter.
+func (s *Store) GetStock(ctx context.Context, symbol string, exchange *string) (*Stock, error) {
 	query := "SELECT symbol, exchange, timestamp FROM stocks WHERE symbol = $1"
 	args := []interface{}{symbol}
+	argIdx := 2
 
 	if exchange != nil {
-		query += " AND exchange = coalesce($2, exchange)"
+		query += fmt.Sprintf(" AND exchange = $%d", argIdx)
 		args = append(args, *exchange)
+		argIdx++
 	}
 
 	var stock Stock
@@ -81,18 +149,45 @@ func (s *Store) StockBySymbol(ctx context.Context, symbol string, exchange *stri
 		return nil, fmt.Errorf("get stock by symbol: %w", err)
 	}
 
-	// TODO: Include the scores
+	stock.Scores, err = s.getStockScores(ctx, stock.Symbol, stock.Exchange)
+	if err != nil {
+		return nil, fmt.Errorf("get stock scores: %w", err)
+	}
 
 	return &stock, nil
 }
 
-// StocksByExchange returns all stocks for a given exchange.
-func (s *Store) StocksByExchange(ctx context.Context, exchange string) ([]Stock, error) {
-	rows, err := s.pool.Query(ctx, "SELECT symbol, exchange, timestamp FROM stocks WHERE exchange = $1", exchange)
-	if err != nil {
-		return nil, fmt.Errorf("list stocks by exchange: %w", err)
+// GetStocks retrieves a list of stocks with optional filters.
+func (s *Store) GetStocks(ctx context.Context, limit int32, exchange *string, minScores, maxScores map[string]float64) ([]Stock, error) {
+	query := "SELECT symbol, exchange, timestamp FROM stocks WHERE true"
+	args := []interface{}{}
+	argIdx := 1
+
+	if exchange != nil {
+		query += fmt.Sprintf(" AND exchange = $%d", argIdx)
+		args = append(args, *exchange)
+		argIdx++
 	}
 
+	for cat, minVal := range minScores {
+		query += fmt.Sprintf(` AND symbol IN (SELECT symbol FROM scores WHERE category = $%d AND value >= $%d)`, argIdx, argIdx+1)
+		args = append(args, cat, minVal)
+		argIdx += 2
+	}
+
+	for cat, maxVal := range maxScores {
+		query += fmt.Sprintf(` AND symbol IN (SELECT symbol FROM scores WHERE category = $%d AND value <= $%d)`, argIdx, argIdx+1)
+		args = append(args, cat, maxVal)
+		argIdx += 2
+	}
+
+	query += " ORDER BY RANDOM() LIMIT $" + fmt.Sprintf("%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get stocks: %w", err)
+	}
 	defer rows.Close()
 
 	var all []Stock
@@ -104,13 +199,34 @@ func (s *Store) StocksByExchange(ctx context.Context, exchange string) ([]Stock,
 		all = append(all, stock)
 	}
 
-	// TODO: Include the scores
+	for i := range all {
+		scores, err := s.getStockScores(ctx, all[i].Symbol, all[i].Exchange)
+		if err != nil {
+			return nil, fmt.Errorf("get scores for %s: %w", all[i].Symbol, err)
+		}
+		all[i].Scores = scores
+	}
 
 	return all, nil
 }
 
-// DeleteStock removes a stock and its associated score entries (cascading delete).
-func (s *Store) DeleteStock(ctx context.Context, symbol string) error {
-	// TODO
-	return tx.Commit(ctx)
+func (s *Store) getStockScores(ctx context.Context, symbol, exchange string) ([]ScoreEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT category, value FROM scores WHERE symbol = $1 AND exchange = $2 ORDER BY category
+	`, symbol, exchange)
+	if err != nil {
+		return nil, fmt.Errorf("query scores: %w", err)
+	}
+	defer rows.Close()
+
+	var scores []ScoreEntry
+	for rows.Next() {
+		var score ScoreEntry
+		if err := rows.Scan(&score.Category, &score.Value); err != nil {
+			return nil, fmt.Errorf("scan score row: %w", err)
+		}
+		scores = append(scores, score)
+	}
+
+	return scores, nil
 }

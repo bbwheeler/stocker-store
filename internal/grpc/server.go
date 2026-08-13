@@ -1,8 +1,18 @@
 // Package grpc provides the gRPC server implementation for the stocker-store service.
 package grpc
 
-// Abstraction for the data store ()
+import (
+	"context"
+
+	"stocker-store/internal/store"
+)
+
+// Store exposes the data store methods needed by the gRPC handlers.
 type Store interface {
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+	RemoveStock(ctx context.Context, symbol, exchange string) (bool, error)
+	GetStock(ctx context.Context, symbol string, exchange *string) (*store.Stock, error)
+	GetStocks(ctx context.Context, limit int32, exchange *string, minScores, maxScores map[string]float64) ([]store.Stock, error)
 }
 
 // Server holds the dependencies for the gRPC service.
