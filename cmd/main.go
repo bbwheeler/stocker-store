@@ -8,8 +8,8 @@ import (
 	"os"
 	"os/signal"
 
-	"stocker-store/internal/data"
 	"stocker-store/internal/grpc"
+	"stocker-store/internal/store"
 )
 
 func main() {
@@ -21,13 +21,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	store, err := data.NewStore(ctx, dsn)
+	st, err := store.NewStore(ctx, dsn)
 	if err != nil {
 		log.Fatalf("initialize store: %v", err)
 	}
-	defer store.Close()
+	defer st.Close()
 
-	server := grpc.NewServer(store)
+	server := grpc.NewServer(st)
 
 	lis, err := net.Listen("tcp", ":3500")
 	if err != nil {
@@ -35,17 +35,10 @@ func main() {
 	}
 
 	gRPCServer := server.GRPCServer()
-	errServer := server.HTTPServer(":3501")
 
 	go func() {
 		if err := gRPCServer.Serve(lis); err != nil {
 			log.Printf("gRPC serve error: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := errServer; err != nil {
-			log.Printf("health server error: %v", err)
 		}
 	}()
 
