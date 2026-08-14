@@ -1,0 +1,4 @@
+[Build]
+File=%h/stocker-store/Containerfile
+SetWorkingDirectory=%h/stocker-store
+ImageTag=stocker-store:latest

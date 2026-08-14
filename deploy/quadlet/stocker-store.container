@@ -1,0 +1,12 @@
+[Container]
+Image=containers.wheeli.ca/stocker-store:latest
+Network=host
+EnvironmentFile=%h/.config/stocker-store/.env.podman
+PodmanArgs=--tmpfs=/tmp:rw,noexec,nosuid,size=64m
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
