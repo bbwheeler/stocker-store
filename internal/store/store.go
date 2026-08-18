@@ -3,9 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// DefaultRetention is how long a stock may live without being added or updated
+// before it is considered stale and removed.
+const DefaultRetention = 30 * 24 * time.Hour
 
 // Store handles all PostgreSQL interactions for the stock store service.
 type Store struct {
@@ -98,13 +103,62 @@ func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
-	stock := &Stock{Symbol: symbol, Exchange: exchange}
+	var ts time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT timestamp FROM stocks WHERE symbol = $1 AND exchange = $2`,
+		symbol, exchange).Scan(&ts); err != nil {
+		return nil, fmt.Errorf("get stock timestamp after update: %w", err)
+	}
+
+	stock := &Stock{Symbol: symbol, Exchange: exchange, Created: ts}
 	stock.Scores, err = s.getStockScores(ctx, symbol, exchange)
 	if err != nil {
 		return nil, fmt.Errorf("get stock scores after update: %w", err)
 	}
 
 	return stock, nil
+}
+
+// RemoveOldStocks deletes stocks (and their dependent scores) whose timestamp is
+// older than the given retention window. A zero or negative retention window
+// disables the check. Returns the number of stock rows removed.
+func (s *Store) RemoveOldStocks(ctx context.Context, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		return 0, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		WITH old AS (
+			SELECT symbol, exchange FROM stocks
+			WHERE timestamp < now() - $1::interval
+		)
+		DELETE FROM scores
+		USING old
+		WHERE scores.symbol = old.symbol AND scores.exchange = old.exchange
+	`, retention.String()); err != nil {
+		return 0, fmt.Errorf("delete old scores: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM stocks
+		WHERE timestamp < now() - $1::interval
+	`, retention.String())
+	if err != nil {
+		return 0, fmt.Errorf("delete old stocks: %w", err)
+	}
+	removed := tag.RowsAffected()
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return removed, nil
 }
 
 // RemoveStock removes a stock and its scores by symbol and exchange. Returns true if anything was removed.
