@@ -22,6 +22,7 @@
 - Remove stocks from an exchange.
 - Submit scores (dynamic categories, normalized -1.0 to 1.0).
 - Thousands of stocks.
+- Remove stocks older than a configurable duration (default 30 days) based on their timestamp.
 - Self-hostable using Podman Quadlets
 - simple, concise
 
@@ -176,7 +177,12 @@ All score values get validated client-side via protobuf `double` with a server-s
 
 ## 8. Data Retention
 
-- Hard deletes: When a stock is "removed," the `stock_exchanges` row gets deleted.
+- Hard deletes: When a stock is "removed," the `stocks` row and its dependent `scores` rows get deleted.
+- Automatic expiry: Stocks not added or updated within the retention window are deleted.
+  - The retention window is a **configurable duration** (e.g. via a `STOCK_TTL` environment variable / config option) with a **default of 30 days**. A value of `0` disables expiry.
+  - A stock's age is measured by its `timestamp` column — the time it was last added or updated. Every `AddStock`/`Update` refreshes this timestamp to "now," even when nothing else changed (the row is `INSERT`/upsert with `ON CONFLICT ... DO UPDATE SET timestamp = now()`).
+  - Expiry runs as a background cleanup: a periodic task (default interval of 1 hour) deletes `stocks` (and, via the foreign key, their `scores`) where `timestamp < now() - <retention>`.
+  - Example: with the 30-day default, a stock that has not been touched for 30 days is removed.
 
 ---
 
