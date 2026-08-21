@@ -27,10 +27,9 @@ type Store interface {
 
 // Config holds the settings required to consume the stocks topic.
 type Config struct {
-	Brokers   []string
-	Topic     string
-	GroupID   string
-	StartFrom int
+	Brokers []string
+	Topic   string
+	GroupID string
 }
 
 // Client consumes stocks from a Kafka topic and writes them to the store.
@@ -62,13 +61,16 @@ func (c *Client) Run(ctx context.Context) error {
 		GroupID:   c.cfg.GroupID,
 		MinBytes:  1e3,
 		MaxBytes:  1e6,
-		StartTime: kafka.Offset(c.cfg.StartFrom),
 	})
 	defer reader.Close()
 
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		msg, err := reader.ReadMessage(ctx)
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.Done) {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return nil
 		}
 		if err != nil {
