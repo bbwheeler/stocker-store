@@ -2,7 +2,7 @@
 
 ## Description
 
-**Stocker Store** is a gRPC-backed service for managing stock data and scores. It supports thousands of stocks and flexible retrieval patterns.
+**Stocker Store** is a service for managing stock data and scores. It supports thousands of stocks and flexible retrieval patterns.
 
 ## Requirements
 
@@ -13,6 +13,8 @@
 * Thousands of stocks.
 * If request limits are less than the total, a random set will be provided
 * Self-hostable using Podman Quadlets
+* Remove stale stocks after a configurable duration
+* Receive stocks through gRPC or Kafka
 * simple, concise
 
 ## Tech
@@ -20,16 +22,7 @@
 * gRPC
 * PostgreSQL
 * Go
-
-## Version Control
-
-## Submitting Changes
-
-All changes, edits, documents, and artifacts must be pushed to the repository when complete. To do so, these steps must be followed:
-1. Commit the code into a branch using git
-2. Push the code to remote origin (git.wheeli.ca)
-3. Open a pull request for the changes you just pushed
-4. Add me (username: brian) as a reviewer on the merge request
+* Kafka
 
 ## Tools
 
