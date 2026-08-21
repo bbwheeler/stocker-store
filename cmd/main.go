@@ -7,9 +7,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
+	"github.com/segmentio/kafka-go"
+
 	"stocker-store/internal/grpc"
+	"stocker-store/internal/kafka"
 	"stocker-store/internal/store"
 )
 
@@ -46,6 +50,10 @@ func main() {
 	go runRetention(ctx, st)
 
 	log.Println("stocker-store listening on :3500")
+
+	if err := runKafkaSubscriber(ctx, st); err != nil {
+		log.Printf("kafka subscriber: %v", err)
+	}
 
 	<-ctx.Done()
 	log.Println("shutting down...")
@@ -97,4 +105,47 @@ func runRetention(ctx context.Context, st *store.Store) {
 			}
 		}
 	}
+}
+
+// runKafkaSubscriber starts a kafka consumer when KAFKA_BROKERS and KAFKA_TOPIC
+// are configured; otherwise it is a no-op so the service stays pure gRPC.
+func runKafkaSubscriber(ctx context.Context, st *store.Store) error {
+	brokers := envList("KAFKA_BROKERS")
+	topic := os.Getenv("KAFKA_TOPIC")
+	if len(brokers) == 0 || topic == "" {
+		return nil
+	}
+
+	groupID := os.Getenv("KAFKA_GROUP_ID")
+	if groupID == "" {
+		groupID = "stocker-store"
+	}
+
+	client := kafka.New(kafka.Config{
+		Brokers:   brokers,
+		Topic:     topic,
+		GroupID:   groupID,
+		StartFrom: int(kafka.FirstOffset()),
+	}, bridgeStore{st})
+
+	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
+	return client.Run(ctx)
+}
+
+func envList(name string) []string {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ",")
+}
+
+// bridgeStore adapts *store.Store to the kafka.Store interface.
+type bridgeStore struct {
+	st *store.Store
+}
+
+func (b bridgeStore) UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) error {
+	_, err := b.st.UpdateStock(ctx, symbol, exchange, scores)
+	return err
 }
