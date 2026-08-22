@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/segmentio/kafka-go"
-
 	"stocker-store/internal/grpc"
 	"stocker-store/internal/kafka"
 	"stocker-store/internal/store"
@@ -122,10 +120,9 @@ func runKafkaSubscriber(ctx context.Context, st *store.Store) error {
 	}
 
 	client := kafka.New(kafka.Config{
-		Brokers:   brokers,
-		Topic:     topic,
-		GroupID:   groupID,
-		StartFrom: int(kafka.FirstOffset()),
+		Brokers: brokers,
+		Topic:   topic,
+		GroupID: groupID,
 	}, bridgeStore{st})
 
 	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
