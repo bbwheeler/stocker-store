@@ -127,38 +127,39 @@ func (s *Store) RemoveOldStocks(ctx context.Context, retention time.Duration) (i
 		return 0, nil
 	}
 
+	cutoff := time.Now().Add(-retention)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
+	// Delete dependent scores first — use timestamp comparison with pgx's time.Time -> TIMESTAMPTZ mapping.
+	_, err = tx.Exec(ctx, `
 		WITH old AS (
 			SELECT symbol, exchange FROM stocks
-			WHERE timestamp < now() - $1::interval
+			WHERE timestamp < $1
 		)
 		DELETE FROM scores
 		USING old
 		WHERE scores.symbol = old.symbol AND scores.exchange = old.exchange
-	`, retention.String()); err != nil {
+	`, cutoff)
+	if err != nil {
 		return 0, fmt.Errorf("delete old scores: %w", err)
 	}
 
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM stocks
-		WHERE timestamp < now() - $1::interval
-	`, retention.String())
+	tag, err := tx.Exec(ctx, `DELETE FROM stocks WHERE timestamp < $1`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("delete old stocks: %w", err)
 	}
-	removed := tag.RowsAffected()
+	rowsRemoved := tag.RowsAffected()
 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit tx: %w", err)
 	}
 
-	return removed, nil
+	return rowsRemoved, nil
 }
 
 // RemoveStock removes a stock and its scores by symbol and exchange. Returns true if anything was removed.
