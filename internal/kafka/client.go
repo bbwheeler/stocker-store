@@ -4,21 +4,15 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 
+	kafkastockv1 "stocker-store/proto/v1/kafka"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/segmentio/kafka-go"
 )
-
-// Message is the JSON payload published to the stocks topic. Scores are
-// optional; a message with stock only still upserts the stock row.
-type Message struct {
-	Symbol   string             `json:"symbol"`
-	Exchange string             `json:"exchange"`
-	Scores   map[string]float64 `json:"scores,omitempty"`
-}
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
@@ -36,7 +30,7 @@ type Config struct {
 type Client struct {
 	cfg     Config
 	store   Store
-	decoder func(raw []byte) (*Message, error)
+	decoder func(raw []byte) (*kafkastockv1.StockUpdate, error)
 }
 
 // New validates the configuration and creates a new Client.
@@ -44,7 +38,7 @@ func New(cfg Config, store Store) *Client {
 	return &Client{
 		cfg:     cfg,
 		store:   store,
-		decoder: decodeMessage,
+		decoder: decodeStock,
 	}
 }
 
@@ -104,16 +98,16 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	return c.store.UpdateStock(ctx, m.Symbol, m.Exchange, m.Scores)
 }
 
-// decodeMessage parses a JSON stock message.
-func decodeMessage(raw []byte) (*Message, error) {
-	var m Message
-	if err := json.Unmarshal(raw, &m); err != nil {
+// decodeStock parses a protobuf stock message.
+func decodeStock(raw []byte) (*kafkastockv1.StockUpdate, error) {
+	m := new(kafkastockv1.StockUpdate)
+	if err := proto.Unmarshal(raw, m); err != nil {
 		return nil, fmt.Errorf("decode stock message: %w", err)
 	}
 	if m.Scores == nil {
-		m.Scores = map[string]float64{}
+		m.Scores = make(map[string]float64)
 	}
-	return &m, nil
+	return m, nil
 }
 
 // validate reports the first misconfiguration in the kafka settings.
