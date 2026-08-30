@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package stockerstore.kafka.v1;
+option go_package = "stocker-store/proto/v1/kafka;kafkastockv1";
+
+// StockUpdate carries a stock symbol, its exchange, and optional score
+// entries. This is the message format published to (and consumed from) kafka
+// topics by external scoring services.
+message StockUpdate {
+  string symbol   = 1;
+  string exchange = 2;
+  map<string, double> scores = 3;
+}
