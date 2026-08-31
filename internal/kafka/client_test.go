@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	kafkastockv1 "stocker-store/proto/v1/kafka"
+
 	"google.golang.org/protobuf/proto"
 
 	kafkaMsg "github.com/segmentio/kafka-go"
@@ -179,7 +180,10 @@ func TestHandle_MissingSymbolOrExchange(t *testing.T) {
 }
 
 func TestHandle_ScoreOutOfRange(t *testing.T) {
-	testCases := []struct{ name string; scores map[string]float64 }{
+	testCases := []struct {
+		name   string
+		scores map[string]float64
+	}{
 		{"too high", map[string]float64{"momentum": 1.5}},
 		{"too low", map[string]float64{"value": -2.0}},
 	}
@@ -268,7 +272,7 @@ func TestDecodeStock_RoundTrip(t *testing.T) {
 	tests = append(tests, &kafkastockv1.StockUpdate{
 		Symbol:   "TSLA",
 		Exchange: "NYSE",
-		Scores: map[string]float64{"momentum": 0.5, "value": -0.3},
+		Scores:   map[string]float64{"momentum": 0.5, "value": -0.3},
 	})
 	tests = append(tests, &kafkastockv1.StockUpdate{
 		Symbol:   "MSFT",

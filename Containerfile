@@ -14,10 +14,10 @@ RUN mkdir -p gen
 RUN protoc \
       --go_out=gen --go_opt=paths=source_relative \
       --go-grpc_out=gen --go-grpc_opt=paths=source_relative,require_unimplemented_servers=false \
-      -I /usr/include -I proto proto/tsx/v1/tsx.proto
+      -I /usr/include -I proto proto/v1/stock_store.proto
 
 RUN go mod tidy
-RUN CGO_ENABLED=0 go build -o /out/stocker-store ./cmd/server
+RUN CGO_ENABLED=0 go build -o /out/stocker-store ./cmd/main.go
 
 # Runtime stage
 FROM gcr.io/distroless/static-debian12
