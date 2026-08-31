@@ -7,9 +7,9 @@
 ```
 ┌───────────┐       Protocol Buffer            ┌──────────────┐    ┌────────────┐
 │  Clients  │ ◄══════► gRPC (bidirectional)  ► │ stocker-store│◄──►│ PostgreSQL │
-│ (gRPC     │       & kafka streaming          │              │    │            │
-│  / REST   │       (future)                   └──────────────┘    └────────────┘
-│   proxy ) │                                      golang                    │
+│ (gRPC,    │       & kafka streaming          │              │    │            │
+│  Kafka)   │                                  └──────────────┘    └────────────┘
+│           │                                      golang                    │
 └───────────┘                                                     ┌────────────┐
                                                                   │ stocks,    │
                                                                   │ scores     │
@@ -153,7 +153,7 @@ SELECT * FROM stocks WHERE exchange = $1 ORDER BY RANDOM()
 ```
                     ┌──────────────┐
     gRPC clients ──►│              │
-     / HTTP proxy   │ stocker-store│ PostgreSQL
+     , kafka        │ stocker-store│ PostgreSQL
                     │   (Go)       │◄── Podman
                     └──────────────┘
 ```
@@ -198,7 +198,9 @@ All query patterns fit comfortably in PostgreSQL with proper indexing. `pgx` pro
 
 ### v1 Deployment (Podman Quadlet)
 
-TODO
+Stocker-Store should be deployed as a podman quadlet.
+- The stocker-store container image should be pushed to the container registry at git.wheeli.ca
+- The quadlet should pull and run the container image. PostgreSQL is deployed separately (not in scope of this repo/service).
 
 ### Schema migrations
 
