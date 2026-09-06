@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,16 +23,23 @@ type stockStore interface {
 }
 
 func main() {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
+	dbUrl := os.Getenv("DATABASE_URL")
+	if dbUrl == "" {
 		log.Fatal("DATABASE_URL required")
-		dsn = "postgres://localhost:5432/stocker?sslmode=disable"
+		dbUrl = "localhost:5432/stocker?sslmode=disable"
+	}
+	password := os.Getenv("DATABASE_PASSWORD")
+	username := os.Getenv("DATABASE_USERNAME")
+	if password != "" && username != "" {
+		dbUrl = fmt.Sprintf("postgres://%s:%s@%s", username, url.QueryEscape(password), dbUrl)
+	} else {
+		dbUrl = fmt.Sprintf("postgres://%s", dbUrl)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	st, err := store.NewStore(ctx, dsn)
+	st, err := store.NewStore(ctx, dbUrl)
 	if err != nil {
 		log.Fatalf("initialize store: %v", err)
 	}
