@@ -41,10 +41,10 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first UpdateStock: %v", err)
 	}
-	if got.Created.IsZero() || got.Created.Before(before) {
-		t.Fatalf("first UpdateStock should refresh timestamp: got %v, seeded %v", got.Created, before)
+	if got.Updated.IsZero() || got.Updated.Before(before) {
+		t.Fatalf("first UpdateStock should refresh timestamp: got %v, seeded %v", got.Updated, before)
 	}
-	after1 := got.Created
+	after1 := got.Updated
 
 	// Small sleep so the second update is observable.
 	time.Sleep(50 * time.Millisecond)
@@ -55,8 +55,8 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second UpdateStock: %v", err)
 	}
-	if !got2.Created.After(after1) {
-		t.Fatalf("second UpdateStock should refresh timestamp even when payload is identical: got %v (previously %v)", got2.Created, after1)
+	if !got2.Updated.After(after1) {
+		t.Fatalf("second UpdateStock should refresh timestamp even when payload is identical: got %v (previously %v)", got2.Updated, after1)
 	}
 
 	// 3) Update with no scores at all must still refresh the timestamp.
@@ -65,8 +65,8 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third UpdateStock (no scores): %v", err)
 	}
-	if !got3.Created.After(got2.Created) {
-		t.Fatalf("UpdateStock with no scores should still refresh timestamp: got %v (previously %v)", got3.Created, got2.Created)
+	if !got3.Updated.After(got2.Updated) {
+		t.Fatalf("UpdateStock with no scores should still refresh timestamp: got %v (previously %v)", got3.Updated, got2.Updated)
 	}
 }
 

@@ -40,7 +40,7 @@ func splitKey(k string) (exchange, symbol string) {
 
 func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error) {
 	f.stocks[key(symbol, exchange)] = scores
-	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Created: time.Now()}, nil
+	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, nil
 }
 
 func (f *fakeStore) RemoveStock(_ context.Context, symbol, exchange string) (bool, error) {
@@ -61,7 +61,7 @@ func (f *fakeStore) GetStock(_ context.Context, symbol string, exchange *string)
 		if sym != symbol || (exchange != nil && ex != *exchange) {
 			continue
 		}
-		return &store.Stock{Symbol: sym, Exchange: ex, Scores: toDomainScores(scores), Created: time.Now()}, nil
+		return &store.Stock{Symbol: sym, Exchange: ex, Scores: toDomainScores(scores), Updated: time.Now()}, nil
 	}
 	return nil, errors.New("not found")
 }
@@ -74,7 +74,7 @@ func (f *fakeStore) GetStocks(_ context.Context, limit int32, exchange *string, 
 			continue
 		}
 		if matchesRange(scores, minScores, maxScores) {
-			out = append(out, store.Stock{Symbol: sym, Exchange: ex, Scores: toDomainScores(scores), Created: time.Now()})
+			out = append(out, store.Stock{Symbol: sym, Exchange: ex, Scores: toDomainScores(scores), Updated: time.Now()})
 		}
 	}
 	if limit > 0 && int64(limit) < int64(len(out)) {

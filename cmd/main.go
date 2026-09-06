@@ -15,9 +15,15 @@ import (
 	"stocker-store/internal/store"
 )
 
+// Store is the subset of the stock store needed to ingest kafka messages.
+type stockStore interface {
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+}
+
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
+		log.Fatal("DATABASE_URL required")
 		dsn = "postgres://localhost:5432/stocker?sslmode=disable"
 	}
 
@@ -105,12 +111,11 @@ func runRetention(ctx context.Context, st *store.Store) {
 	}
 }
 
-// runKafkaSubscriber starts a kafka consumer when KAFKA_BROKERS and KAFKA_TOPIC
-// are configured; otherwise it is a no-op so the service stays pure gRPC.
-func runKafkaSubscriber(ctx context.Context, st *store.Store) error {
+func runKafkaSubscriber(ctx context.Context, st stockStore) error {
 	brokers := envList("KAFKA_BROKERS")
 	topic := os.Getenv("KAFKA_TOPIC")
 	if len(brokers) == 0 || topic == "" {
+		log.Fatal("KAFKA_BROKERS and KAFKA_TOPIC required")
 		return nil
 	}
 
@@ -123,7 +128,7 @@ func runKafkaSubscriber(ctx context.Context, st *store.Store) error {
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
-	}, bridgeStore{st})
+	}, st)
 
 	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
 	return client.Run(ctx)
@@ -135,14 +140,4 @@ func envList(name string) []string {
 		return nil
 	}
 	return strings.Split(raw, ",")
-}
-
-// bridgeStore adapts *store.Store to the kafka.Store interface.
-type bridgeStore struct {
-	st *store.Store
-}
-
-func (b bridgeStore) UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) error {
-	_, err := b.st.UpdateStock(ctx, symbol, exchange, scores)
-	return err
 }

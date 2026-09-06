@@ -7,7 +7,7 @@ type Stock struct {
 	Symbol   string
 	Exchange string
 	Scores   []ScoreEntry
-	Created  time.Time
+	Updated  time.Time
 }
 
 // ScoreEntry represents a single score record for a stock.

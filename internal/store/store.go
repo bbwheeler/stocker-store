@@ -110,7 +110,7 @@ func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores
 		return nil, fmt.Errorf("get stock timestamp after update: %w", err)
 	}
 
-	stock := &Stock{Symbol: symbol, Exchange: exchange, Created: ts}
+	stock := &Stock{Symbol: symbol, Exchange: exchange, Updated: ts}
 	stock.Scores, err = s.getStockScores(ctx, symbol, exchange)
 	if err != nil {
 		return nil, fmt.Errorf("get stock scores after update: %w", err)
@@ -199,7 +199,7 @@ func (s *Store) GetStock(ctx context.Context, symbol string, exchange *string) (
 	}
 
 	var stock Stock
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&stock.Symbol, &stock.Exchange, &stock.Created)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&stock.Symbol, &stock.Exchange, &stock.Updated)
 	if err != nil {
 		return nil, fmt.Errorf("get stock by symbol: %w", err)
 	}
@@ -248,7 +248,7 @@ func (s *Store) GetStocks(ctx context.Context, limit int32, exchange *string, mi
 	var all []Stock
 	for rows.Next() {
 		var stock Stock
-		if err := rows.Scan(&stock.Symbol, &stock.Exchange, &stock.Created); err != nil {
+		if err := rows.Scan(&stock.Symbol, &stock.Exchange, &stock.Updated); err != nil {
 			return nil, fmt.Errorf("scan stock row: %w", err)
 		}
 		all = append(all, stock)
