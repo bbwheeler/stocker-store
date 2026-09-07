@@ -5,21 +5,20 @@ A simple, self-hostable Go gRPC service for storing stocks and their normalized 
 **Tech:** Go 1.25 · gRPC/protobuf · PostgreSQL (pgx v5) · Kafka (segmentio/kafka-go) · Podman Quadlets
 
 ```
-        ┌────────────┐   gRPC :3500   ┌────────────────────────────────┐
-        │  client /  │ ─────────────▶ │            stocker-store        │
-        │  scoring   │ ◀───────────── │  StockStore service            │
-        │  services  │                │  (upsert / remove / retrieve)   │
-        └────────────┘                │  retention loop  (STOCK_TTL)     │
-                                     │  kafka subscriber (optional)     │
-        ┌────────────┐   protobuf   │                                  │
-        │  kafka     │ ────────────▶│                                  │
-        │  brokers   │   topic      └───────────┬──────────────────────┘
-        └────────────┘                          │
-                                                ▼
-                                        ┌───────────────┐
-                                        │  PostgreSQL   │
-                                        │ stocks / scores│
-                                        └───────────────┘
+┌──────────┐   gRPC :3500       ┌──────────────────────────────┐
+│ client / │ ────▶              │ stocker-store                │
+│ scoring  │ ◀────              │ StockStore service           │
+│ services │                    │ upsert / remove / retrieve   │
+└──────────┘                    │ retention loop (STOCK_TTL)   │
+                                │ kafka subscriber (optional)  │
+┌──────────┐   protobuf         │                              │
+│ kafka    │ ────▶              │                              │
+│ brokers  │   topic            └──────────────────────────────┘
+└──────────┘                                      ▼
+                                         ┌──────────────────┐
+                                         │ PostgreSQL       │
+                                         │ stocks / scores  │
+                                         └──────────────────┘
 ```
 
 Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** score categories, each score normalized to `[-1.0, 1.0]`. You can retrieve stocks by symbol, by exchange, or by min/max score ranges; when a request's `limit` is smaller than the number of matching stocks, a random subset is returned. Stocks and scores are upserted, and stale stocks are automatically removed after a configurable retention window (default 30 days). Ingestion happens over gRPC and, optionally, Kafka — the service is fully functional as pure gRPC with only a `DATABASE_URL`.
@@ -158,7 +157,7 @@ On receipt, each message is validated before it is written:
 
 If validation fails (or the raw bytes are not valid PROTOBUF), the message is **dropped and logged**, and the consumer continues with the next message.
 
-Kafka ingestion is a **no-op unless both `KAFKA_BROKERS` and `KAFKA_TOPIC` are set**; otherwise the service runs as pure gRPC. See [Configuration](#configuration). See `proto/v1/kafka/README.md` for details on producing these messages (via Go module, git submodule, or copy).
+Kafka ingestion is a **no-op unless both `KAFKA_BROKERS` and `KAFKA_TOPIC` are set** — see [Configuration](#configuration). Produce these messages via `proto/v1/kafka/README.md` (Go module, git submodule, or copy).
 
 ## Configuration
 
