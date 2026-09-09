@@ -1,5 +1,5 @@
 [Container]
-Image=git.wheeli.ca/stocker-store:latest
+Image=git.wheeli.ca/brian/stocker-store:latest
 Network=host
 EnvironmentFile=%h/.config/stocker-store/.env.podman
 
