@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REGISTRY="git.wheeli.ca/brian"
-IMAGE_NAME="stocker-list:latest"
+IMAGE_NAME="stocker-store:latest"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Building image for $REGISTRY"
