@@ -7,14 +7,14 @@
 ## Requirements
 
 * Retrieve stocks by: symbol, exchange, score ranges
-* Submit stocks.
-* Remove stocks from an exchange.
-* Submit scores (dynamic categories, normalized -1.0 to 1.0).
-* Thousands of stocks.
+* Submit stocks
+* Remove stocks from an exchange
+* Submit scores (dynamic categories, normalized -1.0 to 1.0)
+* Thousands of stocks
 * If request limits are less than the total, a random set will be provided
 * Self-hostable using Podman Quadlets
 * Remove stale stocks after a configurable duration
-* Receive stocks through gRPC or Kafka
+* Receive stocks through Kafka
 * simple, concise
 
 ## Tech

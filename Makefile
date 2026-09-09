@@ -1,7 +1,7 @@
 .PHONY: build test clean run
 
 build:
-	go build -o bin/stocker-store ./cmd/storage/main.go
+	go build -o bin/stocker-store ./cmd/main.go
 
 test:
 	go test ./...

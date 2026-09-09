@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 
+	"stocker-store/internal/store"
 	kafkastockv1 "stocker-store/proto/v1/kafka"
+
 	"google.golang.org/protobuf/proto"
 
 	"github.com/segmentio/kafka-go"
@@ -16,7 +18,7 @@ import (
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
-	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) error
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
 }
 
 // Config holds the settings required to consume the stocks topic.
@@ -50,11 +52,11 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:   c.cfg.Brokers,
-		Topic:     c.cfg.Topic,
-		GroupID:   c.cfg.GroupID,
-		MinBytes:  1e3,
-		MaxBytes:  1e6,
+		Brokers:  c.cfg.Brokers,
+		Topic:    c.cfg.Topic,
+		GroupID:  c.cfg.GroupID,
+		MinBytes: 1e3,
+		MaxBytes: 1e6,
 	})
 	defer reader.Close()
 
@@ -95,7 +97,8 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 		}
 	}
 
-	return c.store.UpdateStock(ctx, m.Symbol, m.Exchange, m.Scores)
+	_, err = c.store.UpdateStock(ctx, m.Symbol, m.Exchange, m.Scores)
+	return err
 }
 
 // decodeStock parses a protobuf stock message.

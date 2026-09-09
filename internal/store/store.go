@@ -110,7 +110,7 @@ func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores
 		return nil, fmt.Errorf("get stock timestamp after update: %w", err)
 	}
 
-	stock := &Stock{Symbol: symbol, Exchange: exchange, Created: ts}
+	stock := &Stock{Symbol: symbol, Exchange: exchange, Updated: ts}
 	stock.Scores, err = s.getStockScores(ctx, symbol, exchange)
 	if err != nil {
 		return nil, fmt.Errorf("get stock scores after update: %w", err)
@@ -127,38 +127,39 @@ func (s *Store) RemoveOldStocks(ctx context.Context, retention time.Duration) (i
 		return 0, nil
 	}
 
+	cutoff := time.Now().Add(-retention)
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
+	// Delete dependent scores first — use timestamp comparison with pgx's time.Time -> TIMESTAMPTZ mapping.
+	_, err = tx.Exec(ctx, `
 		WITH old AS (
 			SELECT symbol, exchange FROM stocks
-			WHERE timestamp < now() - $1::interval
+			WHERE timestamp < $1
 		)
 		DELETE FROM scores
 		USING old
 		WHERE scores.symbol = old.symbol AND scores.exchange = old.exchange
-	`, retention.String()); err != nil {
+	`, cutoff)
+	if err != nil {
 		return 0, fmt.Errorf("delete old scores: %w", err)
 	}
 
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM stocks
-		WHERE timestamp < now() - $1::interval
-	`, retention.String())
+	tag, err := tx.Exec(ctx, `DELETE FROM stocks WHERE timestamp < $1`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("delete old stocks: %w", err)
 	}
-	removed := tag.RowsAffected()
+	rowsRemoved := tag.RowsAffected()
 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit tx: %w", err)
 	}
 
-	return removed, nil
+	return rowsRemoved, nil
 }
 
 // RemoveStock removes a stock and its scores by symbol and exchange. Returns true if anything was removed.
@@ -198,7 +199,7 @@ func (s *Store) GetStock(ctx context.Context, symbol string, exchange *string) (
 	}
 
 	var stock Stock
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&stock.Symbol, &stock.Exchange, &stock.Created)
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&stock.Symbol, &stock.Exchange, &stock.Updated)
 	if err != nil {
 		return nil, fmt.Errorf("get stock by symbol: %w", err)
 	}
@@ -247,7 +248,7 @@ func (s *Store) GetStocks(ctx context.Context, limit int32, exchange *string, mi
 	var all []Stock
 	for rows.Next() {
 		var stock Stock
-		if err := rows.Scan(&stock.Symbol, &stock.Exchange, &stock.Created); err != nil {
+		if err := rows.Scan(&stock.Symbol, &stock.Exchange, &stock.Updated); err != nil {
 			return nil, fmt.Errorf("scan stock row: %w", err)
 		}
 		all = append(all, stock)
