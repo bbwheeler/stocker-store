@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGISTRY="containers.wheeli.ca"
+REGISTRY="git.wheeli.ca/brian"
 IMAGE_NAME="stocker-list:latest"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 

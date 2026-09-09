@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"stocker-store/internal/store"
 	kafkastockv1 "stocker-store/proto/v1/kafka"
 
 	"google.golang.org/protobuf/proto"
@@ -22,15 +23,15 @@ type fakeStore struct {
 	err        error
 }
 
-func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) error {
+func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error) {
 	if f.err != nil {
-		return f.err
+		return nil, f.err
 	}
 	f.called = true
 	f.lastSymbol = symbol
 	f.lastExch = exchange
 	f.lastScores = scores
-	return nil
+	return nil, nil
 }
 
 // TestDecodeStock_HappyPath verifies a full protobuf round-trip with all fields.
