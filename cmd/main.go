@@ -124,7 +124,7 @@ func runKafkaSubscriber(ctx context.Context, st stockStore) error {
 	brokers := envList("KAFKA_BROKERS")
 	topic := os.Getenv("KAFKA_TOPIC")
 	if len(brokers) == 0 || topic == "" {
-		log.Fatal("KAFKA_BROKERS and KAFKA_TOPIC required")
+		log.Printf("KAFKA_BROKERS and KAFKA_TOPIC required")
 		return nil
 	}
 
