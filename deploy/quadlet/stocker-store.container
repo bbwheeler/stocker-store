@@ -1,6 +1,8 @@
+[Unit]
+After=network-online.target
+
 [Container]
 Image=git.wheeli.ca/brian/stocker-store:latest
-Network=host
 EnvironmentFile=%h/.config/stocker-store/.env.podman
 
 [Service]
