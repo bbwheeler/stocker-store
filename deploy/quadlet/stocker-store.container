@@ -4,6 +4,7 @@ After=network-online.target
 [Container]
 Image=git.wheeli.ca/brian/stocker-store:latest
 EnvironmentFile=%h/.config/stocker-store/.env.podman
+AutoUpdate=registry
 
 [Service]
 Restart=always
