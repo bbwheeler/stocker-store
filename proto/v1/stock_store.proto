@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package stockstore.v1;
 option go_package = "stocker-store/proto/v1;stockstorev1";
+import "google/protobuf/timestamp.proto";
 
 service StockStore {
 	rpc AddStocks(stream UpdateStockRequest) returns (Stock);
@@ -17,5 +18,9 @@ message GetStockRequest { string symbol = 1; optional string exchange = 2; }
 message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
 message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
-message ScoreEntry { string category = 1; double value = 2; }
+message ScoreEntry {
+  string category = 1;
+  double value    = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
 message StockList { repeated Stock stocks = 1; }
