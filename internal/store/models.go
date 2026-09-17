@@ -12,6 +12,7 @@ type Stock struct {
 
 // ScoreEntry represents a single score record for a stock.
 type ScoreEntry struct {
-	Category string
-	Value    float64
+	Category  string
+	Value     float64
+	UpdatedAt time.Time
 }
