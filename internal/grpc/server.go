@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Store exposes the data store methods needed by the gRPC handlers.
@@ -125,7 +126,7 @@ func (s *Server) GetStocks(ctx context.Context, req *st.GetStocksRequest) (*st.S
 func toProtoScores(entries []store.ScoreEntry) []*st.ScoreEntry {
 	out := make([]*st.ScoreEntry, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, &st.ScoreEntry{Category: e.Category, Value: e.Value})
+		out = append(out, &st.ScoreEntry{Category: e.Category, Value: e.Value, UpdatedAt: timestamppb.New(e.UpdatedAt)})
 	}
 	return out
 }
