@@ -91,13 +91,15 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 		return errors.New("stock message missing symbol or exchange")
 	}
 
-	for cat, val := range m.Scores {
-		if val < -1.0 || val > 1.0 {
-			return fmt.Errorf("score %s value %v out of range [-1, 1]", cat, val)
+	for _, e := range m.GetScores() {
+		v := e.GetValue()
+		cat := e.GetCategory()
+		if v < -1.0 || v > 1.0 {
+			return fmt.Errorf("score %s value %v out of range [-1, 1]", cat, v)
 		}
 	}
 
-	_, err = c.store.UpdateStock(ctx, m.Symbol, m.Exchange, m.Scores)
+	_, err = c.store.UpdateStock(ctx, m.Symbol, m.Exchange, toMap(m.GetScores()))
 	return err
 }
 
@@ -107,10 +109,20 @@ func decodeStock(raw []byte) (*kafkastockv1.StockUpdate, error) {
 	if err := proto.Unmarshal(raw, m); err != nil {
 		return nil, fmt.Errorf("decode stock message: %w", err)
 	}
-	if m.Scores == nil {
-		m.Scores = make(map[string]float64)
-	}
 	return m, nil
+}
+
+// toMap converts a repeated list of score entries into the map shape the store
+// expects. A nil list yields a nil map (a scoreless upsert).
+func toMap(entries []*kafkastockv1.ScoreEntry) map[string]float64 {
+	if entries == nil {
+		return nil
+	}
+	m := make(map[string]float64, len(entries))
+	for _, e := range entries {
+		m[e.GetCategory()] = e.GetValue()
+	}
+	return m
 }
 
 // validate reports the first misconfiguration in the kafka settings.
