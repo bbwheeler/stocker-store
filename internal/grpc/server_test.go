@@ -100,7 +100,7 @@ func matchesRange(scores, minScores, maxScores map[string]float64) bool {
 func toDomainScores(m map[string]float64) []store.ScoreEntry {
 	entries := make([]store.ScoreEntry, 0, len(m))
 	for cat, v := range m {
-		entries = append(entries, store.ScoreEntry{Category: cat, Value: v})
+		entries = append(entries, store.ScoreEntry{Category: cat, Value: v, UpdatedAt: time.Now()})
 	}
 	return entries
 }
@@ -144,6 +144,10 @@ func TestUpdateStock(t *testing.T) {
 	scores := stock.GetScores()
 	if len(scores) != 1 || scores[0].GetCategory() != "momentum" || scores[0].GetValue() != 0.5 {
 		t.Fatalf("unexpected scores: %v", scores)
+	}
+	// The response score must carry a non-zero last-updated timestamp.
+	if scores[0].GetUpdatedAt().AsTime().IsZero() {
+		t.Fatalf("score updated_at = zero, want non-zero: %v", scores[0])
 	}
 }
 

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"stocker-store/internal/store"
 	kafkastockv1 "stocker-store/proto/v1/kafka"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	kafkaMsg "github.com/segmentio/kafka-go"
 )
@@ -34,14 +36,27 @@ func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scor
 	return nil, nil
 }
 
+// scoreByCat finds the score entry with the given category, failing the test if
+// it is not present.
+func scoreByCat(t *testing.T, entries []*kafkastockv1.ScoreEntry, cat string) *kafkastockv1.ScoreEntry {
+	t.Helper()
+	for _, e := range entries {
+		if e.GetCategory() == cat {
+			return e
+		}
+	}
+	t.Fatalf("score %q not found", cat)
+	return nil
+}
+
 // TestDecodeStock_HappyPath verifies a full protobuf round-trip with all fields.
 func TestDecodeStock_HappyPath(t *testing.T) {
 	protoMsg := &kafkastockv1.StockUpdate{
 		Symbol:   "AAPL",
 		Exchange: "NASDAQ",
-		Scores: map[string]float64{
-			"momentum": 0.5,
-			"value":    -0.25,
+		Scores: []*kafkastockv1.ScoreEntry{
+			{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
+			{Category: "value", Value: -0.25, UpdatedAt: timestamppb.New(time.Now())},
 		},
 	}
 
@@ -63,17 +78,18 @@ func TestDecodeStock_HappyPath(t *testing.T) {
 	if len(m.Scores) != 2 {
 		t.Fatalf("len(Scores) = %d, want 2", len(m.Scores))
 	}
-	if got := m.Scores["momentum"]; got != 0.5 {
+	if got := scoreByCat(t, m.Scores, "momentum").GetValue(); got != 0.5 {
 		t.Errorf("Scores[momentum] = %v, want 0.5", got)
 	}
-	if got := m.Scores["value"]; got != -0.25 {
+	if got := scoreByCat(t, m.Scores, "value").GetValue(); got != -0.25 {
 		t.Errorf("Scores[value] = %v, want -0.25", got)
 	}
 }
 
-// TestDecodeStock_ScoresAbsentDefaultsToEmptyMap verifies that when the proto
-// message omits the scores field (nil), decodeStock returns an empty map.
-func TestDecodeStock_ScoresAbsentDefaultsToEmptyMap(t *testing.T) {
+// TestDecodeStock_ScoresAbsentDefaultsToEmptySlice verifies that when the proto
+// message omits the scores field (nil), decodeStock returns an empty
+// (nil-tolerant) slice of scores.
+func TestDecodeStock_ScoresAbsentDefaultsToEmptySlice(t *testing.T) {
 	protoMsg := &kafkastockv1.StockUpdate{Symbol: "AAPL", Exchange: "NASDAQ"}
 	raw, err := proto.Marshal(protoMsg)
 	if err != nil {
@@ -83,9 +99,6 @@ func TestDecodeStock_ScoresAbsentDefaultsToEmptyMap(t *testing.T) {
 	m, err := decodeStock(raw)
 	if err != nil {
 		t.Fatalf("decodeStock() unexpected error: %v", err)
-	}
-	if m.Scores == nil {
-		t.Fatal("Scores = nil, want non-nil empty map")
 	}
 	if len(m.Scores) != 0 {
 		t.Errorf("len(Scores) = %d, want 0", len(m.Scores))
@@ -183,10 +196,10 @@ func TestHandle_MissingSymbolOrExchange(t *testing.T) {
 func TestHandle_ScoreOutOfRange(t *testing.T) {
 	testCases := []struct {
 		name   string
-		scores map[string]float64
+		scores []*kafkastockv1.ScoreEntry
 	}{
-		{"too high", map[string]float64{"momentum": 1.5}},
-		{"too low", map[string]float64{"value": -2.0}},
+		{"too high", []*kafkastockv1.ScoreEntry{{Category: "momentum", Value: 1.5}}},
+		{"too low", []*kafkastockv1.ScoreEntry{{Category: "value", Value: -2.0}}},
 	}
 
 	for _, tc := range testCases {
@@ -232,7 +245,10 @@ func TestHandle_StoreErrorPropagated(t *testing.T) {
 }
 
 func TestHandle_HappyPath(t *testing.T) {
-	wantScores := map[string]float64{"momentum": 0.5, "value": -0.25}
+	wantScores := []*kafkastockv1.ScoreEntry{
+		{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
+		{Category: "value", Value: -0.25, UpdatedAt: timestamppb.New(time.Now())},
+	}
 	store := &fakeStore{}
 	c := New(Config{}, store)
 	msg := kafkastockv1.StockUpdate{
@@ -257,10 +273,16 @@ func TestHandle_HappyPath(t *testing.T) {
 	if store.lastExch != "NASDAQ" {
 		t.Errorf("store lastExchange = %q, want %q", store.lastExch, "NASDAQ")
 	}
-	if len(store.lastScores) != len(wantScores) {
-		t.Fatalf("store lastScores count = %d, want %d", len(store.lastScores), len(wantScores))
+	// The fake store records the map the production code converted from the
+	// repeated ScoreEntry slice: assert toMap preserved every category/value.
+	wantMap := make(map[string]float64, len(wantScores))
+	for _, e := range wantScores {
+		wantMap[e.Category] = e.Value
 	}
-	for k, v := range wantScores {
+	if len(store.lastScores) != len(wantMap) {
+		t.Fatalf("store lastScores count = %d, want %d", len(store.lastScores), len(wantMap))
+	}
+	for k, v := range wantMap {
 		if got := store.lastScores[k]; got != v {
 			t.Errorf("score[%s] = %v, want %v", k, got, v)
 		}
@@ -269,18 +291,22 @@ func TestHandle_HappyPath(t *testing.T) {
 
 // TestDecodeStock_RoundTrip verifies a proto.Marshal + decodeStock round-trip.
 func TestDecodeStock_RoundTrip(t *testing.T) {
-	var tests []*kafkastockv1.StockUpdate
-	tests = append(tests, &kafkastockv1.StockUpdate{
-		Symbol:   "TSLA",
-		Exchange: "NYSE",
-		Scores:   map[string]float64{"momentum": 0.5, "value": -0.3},
-	})
-	tests = append(tests, &kafkastockv1.StockUpdate{
-		Symbol:   "MSFT",
-		Exchange: "XNAS",
-	})
+	testMsgs := []*kafkastockv1.StockUpdate{
+		{
+			Symbol:   "TSLA",
+			Exchange: "NYSE",
+			Scores: []*kafkastockv1.ScoreEntry{
+				{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
+				{Category: "value", Value: -0.3, UpdatedAt: timestamppb.New(time.Now())},
+			},
+		},
+		{
+			Symbol:   "MSFT",
+			Exchange: "XNAS",
+		},
+	}
 
-	for i, msg := range tests {
+	for i, msg := range testMsgs {
 		msg := msg
 		t.Run(fmt.Sprintf("idx_%d", i), func(t *testing.T) {
 			raw, err := proto.Marshal(msg)
@@ -291,20 +317,14 @@ func TestDecodeStock_RoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decodeStock() unexpected error: %v", err)
 			}
-			wantScores := msg.Scores
-			if wantScores == nil {
-				wantScores = make(map[string]float64)
+			if len(decoded.Scores) != len(msg.Scores) {
+				t.Errorf("[%d] scores count = %d, want %d", i, len(decoded.Scores), len(msg.Scores))
+				return
 			}
-			gotScores := decoded.Scores
-			if gotScores == nil {
-				gotScores = make(map[string]float64)
-			}
-			if len(gotScores) != len(wantScores) {
-				t.Errorf("[%d] scores count = %d, want %d", i, len(gotScores), len(wantScores))
-			}
-			for k, v := range wantScores {
-				if got := gotScores[k]; got != v {
-					t.Errorf("[%d] score[%s] = %v, want %v", i, k, got, v)
+			for _, want := range msg.Scores {
+				got := scoreByCat(t, decoded.Scores, want.Category)
+				if got.GetValue() != want.GetValue() {
+					t.Errorf("[%d] score[%s] = %v, want %v", i, want.Category, got.GetValue(), want.GetValue())
 				}
 			}
 		})
