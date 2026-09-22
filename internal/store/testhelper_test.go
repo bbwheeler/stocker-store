@@ -53,15 +53,29 @@ func seedStock(t *testing.T, s *Store, symbol, exchange string, ts time.Time) {
 	}
 }
 
-func seedScore(t *testing.T, s *Store, symbol, exchange, category string, val float64) {
+func seedScore(t *testing.T, s *Store, symbol, exchange, category string, val float64, ts time.Time) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
 		`INSERT INTO scores (symbol, exchange, category, value, timestamp)
-		 VALUES ($1,$2,$3,$4,now())
-		 ON CONFLICT (symbol, exchange, category) DO UPDATE SET value=$4, timestamp=now()`,
-		symbol, exchange, category, val); err != nil {
+		 VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (symbol, exchange, category) DO UPDATE SET value=$4, timestamp=$5`,
+		symbol, exchange, category, val, ts); err != nil {
 		t.Fatalf("seed score: %v", err)
 	}
+}
+
+// readScore reads a single (symbol, exchange, category) score row back,
+// including its timestamp (which surfaces as ScoreEntry.UpdatedAt in the
+// domain model).
+func readScore(t *testing.T, s *Store, symbol, exchange, category string) ScoreEntry {
+	t.Helper()
+	var e ScoreEntry
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT category, value, timestamp FROM scores WHERE symbol=$1 AND exchange=$2 AND category=$3`,
+		symbol, exchange, category).Scan(&e.Category, &e.Value, &e.UpdatedAt); err != nil {
+		t.Fatalf("read score %s/%s/%s: %v", symbol, exchange, category, err)
+	}
+	return e
 }
 
 func stockExists(t *testing.T, s *Store, symbol, exchange string) bool {

@@ -46,6 +46,22 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 	}
 	after1 := got.Updated
 
+	// The written score must also carry a non-zero last-updated timestamp:
+	// read the score back from the DB and check ScoreEntry.UpdatedAt.
+	gotEntry, err := s.getStockScores(ctx, sym, exh)
+	if err != nil {
+		t.Fatalf("getStockScores: %v", err)
+	}
+	if len(gotEntry) != 1 {
+		t.Fatalf("expected 1 score after update, got %d", len(gotEntry))
+	}
+	if gotEntry[0].UpdatedAt.IsZero() {
+		t.Fatalf("score UpdatedAt = zero, want non-zero")
+	}
+	if gotEntry[0].UpdatedAt.Before(before) {
+		t.Fatalf("score UpdatedAt %v is before the seeded 'before' time %v", gotEntry[0].UpdatedAt, before)
+	}
+
 	// Small sleep so the second update is observable.
 	time.Sleep(50 * time.Millisecond)
 
@@ -88,7 +104,7 @@ func TestRemoveOldStocksRemovesOldStocks(t *testing.T) {
 	fresh := now.Add(-1 * time.Hour)
 
 	seedStock(t, s, olderSym, olderExh, old)
-	seedScore(t, s, olderSym, olderExh, "momentum", 0.3)
+	seedScore(t, s, olderSym, olderExh, "momentum", 0.3, time.Now())
 	if got := scoreCount(t, s, olderSym, olderExh); got != 1 {
 		t.Fatalf("expected 1 score seeded, got %d", got)
 	}

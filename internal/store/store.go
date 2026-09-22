@@ -267,7 +267,7 @@ func (s *Store) GetStocks(ctx context.Context, limit int32, exchange *string, mi
 
 func (s *Store) getStockScores(ctx context.Context, symbol, exchange string) ([]ScoreEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT category, value FROM scores WHERE symbol = $1 AND exchange = $2 ORDER BY category
+		SELECT category, value, timestamp FROM scores WHERE symbol = $1 AND exchange = $2 ORDER BY category
 	`, symbol, exchange)
 	if err != nil {
 		return nil, fmt.Errorf("query scores: %w", err)
@@ -277,7 +277,7 @@ func (s *Store) getStockScores(ctx context.Context, symbol, exchange string) ([]
 	var scores []ScoreEntry
 	for rows.Next() {
 		var score ScoreEntry
-		if err := rows.Scan(&score.Category, &score.Value); err != nil {
+		if err := rows.Scan(&score.Category, &score.Value, &score.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan score row: %w", err)
 		}
 		scores = append(scores, score)

@@ -94,7 +94,7 @@ message GetStockRequest { string symbol = 1; optional string exchange = 2; }
 message GetStocksRequest { int32 limit = 1; optional string exchange = 2; optional map<string, double> min_scores = 3; optional map<string, double> max_scores = 4; }
 message RemoveStocksResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
-message ScoreEntry { string category = 1; double value = 2; }
+message ScoreEntry { string category = 1; double value = 2; google.protobuf.Timestamp updated_at = 3; }
 ```
 
 ---

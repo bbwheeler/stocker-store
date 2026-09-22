@@ -2,12 +2,23 @@ syntax = "proto3";
 
 package stockerstore.kafka.v1;
 option go_package = "stocker-store/proto/v1/kafka;kafkastockv1";
+import "google/protobuf/timestamp.proto";
 
-// StockUpdate carries a stock symbol, its exchange, and optional score
-// entries. This is the message format published to (and consumed from) kafka
-// topics by external scoring services.
+// ScoreEntry carries a single score category, its value, and the time it was
+// last updated. Field numbers and types mirror the gRPC ScoreEntry in
+// stockstore.v1 for shape parity.
+message ScoreEntry {
+  string category = 1;
+  double  value   = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+// StockUpdate carries a stock symbol, its exchange, and a set of scores,
+// each as a ScoreEntry with its own per-entry updated_at timestamp. This is
+// the message format published to (and consumed from) kafka topics by
+// external scoring services.
 message StockUpdate {
   string symbol   = 1;
   string exchange = 2;
-  map<string, double> scores = 3;
+  repeated ScoreEntry scores = 3;
 }
