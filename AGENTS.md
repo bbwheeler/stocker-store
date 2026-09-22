@@ -15,6 +15,7 @@
 * Self-hostable using Podman Quadlets
 * Remove stale stocks after a configurable duration
 * Receive stocks through Kafka
+* Each score has a last-updated timestamp (set by the server on write, reads back the stored value)
 * simple, concise
 
 ## Tech

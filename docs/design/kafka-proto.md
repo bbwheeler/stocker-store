@@ -3,6 +3,8 @@
 ## Status
 Draft
 
+> **Superseded (partially):** see [docs/design/score-entry-timestamp.md](score-entry-timestamp.md). The "why a map field?" rationale in this document (Section 2 and the "Explanation of choices" section) is **superseded**: scores now carry a per-entry `updated_at`, so `map<string,double>` is no longer sufficient — the current `StockUpdate.scores` field is `repeated ScoreEntry` in the `stockerstore.kafka.v1` namespace.
+
 ## Motivation
 
 The kafka layer consumes stock messages over JSON. This is a well-known serialization anti-pattern: no schema evolution, large payloads, ambiguous type encoding, and no IDE support for consumers/producers. The project already has protobuf tooling set up via the gRPC service definition (`proto/v1/stock_store.proto`). We will introduce a **separate** proto file for kafka messages so that other services can use it as a shared contract without importing the full gRPC service.
@@ -23,7 +25,11 @@ Rather than introducing request/response RPC-style terminology, kafka messages a
 | `"exchange"`    | `string exchange = 2`                     | Required (validated at runtime) |
 | `"scores"`      | `map<string, double> scores = 3`          | Optional; empty map = no scores |
 
+> **Superseded:** see [docs/design/score-entry-timestamp.md](score-entry-timestamp.md).
+
 Why a map field? In proto3, `map<K,V>` defaults to nil when absent -- it never forces an empty collection the way `repeated` does. This perfectly matches the existing `omitempty` JSON behavior and means downstream code that checks `m.Scores == nil` vs `len(m.Scores) > 0` still works semantically unchanged.
+
+**Note (superseded):** a later requirement (per-entry `updated_at` on each score) is impossible with `map<K,V>` — the current `StockUpdate.scores` field is therefore `repeated ScoreEntry`, not a map. See [docs/design/score-entry-timestamp.md](score-entry-timestamp.md).
 
 ### 3. Versioning / Importability for Other Repos
 A `README.md` at `proto/v1/kafka/` covers three strategies: (a) go module dependency, (b) git submodule, (c) copy one file.
@@ -62,6 +68,8 @@ message StockUpdate {
 - **Package name `stockerstore.kafka.v1`**: Clear that this is the kafka schema (not gRPC), versioned at v1. Namespacing under `stockerstore` avoids collisions with other teams' message types.
 - **Go package name `kafkastockv1`**: Short, readable Go import path when this repo is consumed as a module.
 - **`map<string, double>` instead of `repeated ScoreEntry`**: Matches the existing `map[string]float64` Go type exactly. No need for a `ScoreEntry` wrapper type just for kafka messages -- the gRPC proto already has one for stored data.
+
+  > **Superseded:** a later requirement (per-entry `updated_at`) cannot be carried in a map field. The current `StockUpdate.scores` field is therefore `repeated ScoreEntry` — see [docs/design/score-entry-timestamp.md](score-entry-timestamp.md).
 
 ---
 

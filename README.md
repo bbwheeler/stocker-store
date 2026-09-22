@@ -21,7 +21,7 @@ A simple, self-hostable Go gRPC service for storing stocks and their normalized 
                                          └──────────────────┘
 ```
 
-Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** score categories, each score normalized to `[-1.0, 1.0]`. You can retrieve stocks by symbol, by exchange, or by min/max score ranges; when a request's `limit` is smaller than the number of matching stocks, a random subset is returned. Stocks and scores are upserted, and stale stocks are automatically removed after a configurable retention window (default 30 days). Ingestion happens over gRPC and, optionally, Kafka — the service is fully functional as pure gRPC with only a `DATABASE_URL`.
+Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** score categories, each score normalized to `[-1.0, 1.0]` and carrying a per-score last-updated timestamp (set by the server on write). You can retrieve stocks by symbol, by exchange, or by min/max score ranges; when a request's `limit` is smaller than the number of matching stocks, a random subset is returned. Stocks and scores are upserted, and stale stocks are automatically removed after a configurable retention window (default 30 days). Ingestion happens over gRPC and, optionally, Kafka — the service is fully functional as pure gRPC with only a `DATABASE_URL`.
 
 ## Table of Contents
 
@@ -48,7 +48,7 @@ The service exposes a gRPC `StockStore` interface (package `stockstore.v1`) for 
 ## Features
 
 - **Bulk and single upserts** — send one stock or a stream of stocks; both upsert the stock and its scores atomically.
-- **Dynamic score categories** — scores are keyed by an arbitrary category string, each normalized to `[-1.0, 1.0]`.
+- **Dynamic score categories** — scores are keyed by an arbitrary category string, each normalized to `[-1.0, 1.0]`, each with a last-updated timestamp set by the server on write.
 - **Flexible retrieval** — filter by symbol, exchange, and per-category min/max score ranges.
 - **Random sampling** — when `limit` is less than the total matching count, a random subset is returned (`ORDER BY RANDOM()`).
 - **Stale-stock removal** — stocks older than `STOCK_TTL` (default 30 days) are deleted along with their scores; disabled when set to `0`.
@@ -82,7 +82,7 @@ The service is `StockStore` in package `stockstore.v1`. Pre-generated Go binding
 | `GetStocksRequest` | `int32 limit`, `optional string exchange`, `map<string,double> min_scores`, `map<string,double> max_scores` |
 | `RemoveStockResponse` | `bool removed` |
 | `Stock` | `string symbol`, `string exchange`, `repeated ScoreEntry scores` |
-| `ScoreEntry` | `string category`, `double value` |
+| `ScoreEntry` | `string category`, `double value`, `google.protobuf.Timestamp updated_at` |
 | `StockList` | `repeated Stock stocks` |
 
 The full service definition (`proto/v1/stock_store.proto`):
@@ -92,6 +92,7 @@ syntax = "proto3";
 
 package stockstore.v1;
 option go_package = "stocker-store/proto/v1;stockstorev1";
+import "google/protobuf/timestamp.proto";
 
 service StockStore {
 	rpc AddStocks(stream UpdateStockRequest) returns (Stock);
@@ -107,7 +108,7 @@ message GetStockRequest { string symbol = 1; optional string exchange = 2; }
 message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
 message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
-message ScoreEntry { string category = 1; double value = 2; }
+message ScoreEntry { string category = 1; double value = 2; google.protobuf.Timestamp updated_at = 3; }
 message StockList { repeated Stock stocks = 1; }
 ```
 
@@ -133,18 +134,28 @@ Message `StockUpdate` in package `stockerstore.kafka.v1`:
 | --- | --- | --- |
 | `symbol` | `string` | Yes |
 | `exchange` | `string` | Yes |
-| `scores` | `map<string,double>` | No |
+| `scores` | `repeated ScoreEntry` | No |
+| `ScoreEntry.category` | `string` | — |
+| `ScoreEntry.value` | `double` | — |
+| `ScoreEntry.updated_at` | `google.protobuf.Timestamp` | — |
 
 ```proto
 syntax = "proto3";
 
 package stockerstore.kafka.v1;
 option go_package = "stocker-store/proto/v1/kafka;kafkastockv1";
+import "google/protobuf/timestamp.proto";
+
+message ScoreEntry {
+  string category = 1;
+  double  value   = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
 
 message StockUpdate {
   string symbol            = 1;
   string exchange          = 2;
-  map<string, double> scores = 3;
+  repeated ScoreEntry scores = 3;
 }
 ```
 
@@ -156,6 +167,8 @@ On receipt, each message is validated before it is written:
 - Every score value must be within `[-1.0, 1.0]`.
 
 If validation fails (or the raw bytes are not valid PROTOBUF), the message is **dropped and logged**, and the consumer continues with the next message.
+
+> **Timestamps:** the server stamps each written score with its **own clock** (`now()`) on write; the stored value read back in gRPC responses is authoritative. Any `updated_at` a Kafka producer sends is **advisory only** — the server accepts and discards it.
 
 Kafka ingestion is a **no-op unless both `KAFKA_BROKERS` and `KAFKA_TOPIC` are set** — see [Configuration](#configuration). Produce these messages via `proto/v1/kafka/README.md` (Go module, git submodule, or copy).
 
@@ -329,6 +342,7 @@ proto/v1/kafka/                # StockUpdate message (stock_message.proto), cons
 deploy/quadlet/                # Quadlet unit files (stocker-store.build / stocker-store.container)
 deploy/push.sh                 # build + push image to registry
 deploy/install.sh              # legacy install script
+docs/design/                   # design docs (kafka-proto.md, score-entry-timestamp.md)
 Containerfile                  # multi-stage build (note the stale EXPOSE 50051)
 Makefile                       # build / run / test / clean
 design.md                      # historical design doc (partially stale)
@@ -354,6 +368,7 @@ These are known issues in the deployment scripts and metadata; none of them is a
 ## Further Reading
 
 - `design.md` — original design doc (partially stale).
+- `docs/design/score-entry-timestamp.md` — design for the per-score `updated_at` timestamp.
 - `AGENTS.md` — agent-oriented project notes.
 - `proto/v1/kafka/README.md` — how to produce/consume the Kafka `StockUpdate` message.
 - Source: `cmd/main.go`, `internal/{grpc,kafka,store}`, `proto/v1*`.
