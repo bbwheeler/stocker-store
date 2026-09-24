@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log"
 
-	"stocker-store/internal/store"
-	kafkastockv1 "stocker-store/proto/v1/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/store"
+	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
 
 	"google.golang.org/protobuf/proto"
 
@@ -32,7 +32,7 @@ type Config struct {
 type Client struct {
 	cfg     Config
 	store   Store
-	decoder func(raw []byte) (*kafkastockv1.StockUpdate, error)
+	decoder func(raw []byte) (*stockv1.Stock, error)
 }
 
 // New validates the configuration and creates a new Client.
@@ -104,8 +104,8 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 }
 
 // decodeStock parses a protobuf stock message.
-func decodeStock(raw []byte) (*kafkastockv1.StockUpdate, error) {
-	m := new(kafkastockv1.StockUpdate)
+func decodeStock(raw []byte) (*stockv1.Stock, error) {
+	m := new(stockv1.Stock)
 	if err := proto.Unmarshal(raw, m); err != nil {
 		return nil, fmt.Errorf("decode stock message: %w", err)
 	}
@@ -114,7 +114,7 @@ func decodeStock(raw []byte) (*kafkastockv1.StockUpdate, error) {
 
 // toMap converts a repeated list of score entries into the map shape the store
 // expects. A nil list yields a nil map (a scoreless upsert).
-func toMap(entries []*kafkastockv1.ScoreEntry) map[string]float64 {
+func toMap(entries []*stockv1.ScoreEntry) map[string]float64 {
 	if entries == nil {
 		return nil
 	}

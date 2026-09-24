@@ -9,8 +9,8 @@ import (
 	"log"
 	"strings"
 
-	"stocker-store/internal/store"
-	st "stocker-store/proto/v1"
+	"git.wheeli.ca/brian/stocker-store/internal/store"
+	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc"

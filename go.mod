@@ -1,4 +1,4 @@
-module stocker-store
+module git.wheeli.ca/brian/stocker-store
 
 go 1.25.0
 

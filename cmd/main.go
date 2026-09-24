@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"stocker-store/internal/grpc"
-	"stocker-store/internal/kafka"
-	"stocker-store/internal/store"
+	"git.wheeli.ca/brian/stocker-store/internal/grpc"
+	"git.wheeli.ca/brian/stocker-store/internal/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/store"
 )
 
 // Store is the subset of the stock store needed to ingest kafka messages.

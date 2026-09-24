@@ -25,19 +25,35 @@ Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** s
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [gRPC API](#grpc-api)
-  - [Methods](#methods)
-  - [Messages](#messages)
-  - [Example](#example)
-- [Kafka Ingestion](#kafka-ingestion)
-- [Configuration](#configuration)
-- [Deployment](#deployment)
-- [Database](#database)
-- [Development](#development)
-- [Troubleshooting & Notes](#troubleshooting--notes)
-- [Further Reading](#further-reading)
+- [Stocker Store](#stocker-store)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Features](#features)
+  - [gRPC API](#grpc-api)
+    - [Methods](#methods)
+    - [Messages](#messages)
+    - [Example](#example)
+  - [Kafka Ingestion](#kafka-ingestion)
+    - [Message schema](#message-schema)
+    - [Validation](#validation)
+  - [Configuration](#configuration)
+    - [Environment Variables](#environment-variables)
+    - [Sample `.env.podman`](#sample-envpodman)
+    - [Test-only variable](#test-only-variable)
+  - [Deployment](#deployment)
+    - [Prerequisites](#prerequisites)
+    - [Option A — Run locally (Go)](#option-a--run-locally-go)
+    - [Option B — Run as a container](#option-b--run-as-a-container)
+    - [Option C — Podman Quadlets (self-host)](#option-c--podman-quadlets-self-host)
+    - [Quickstart (Quadlets, end-to-end)](#quickstart-quadlets-end-to-end)
+    - [Push to registry](#push-to-registry)
+  - [Database](#database)
+  - [Development](#development)
+    - [Build \& test](#build--test)
+    - [Repository layout](#repository-layout)
+  - [Troubleshooting \& Notes](#troubleshooting--notes)
+    - [Known inconsistencies to fix](#known-inconsistencies-to-fix)
+  - [Further Reading](#further-reading)
 
 ## Overview
 
@@ -91,7 +107,7 @@ The full service definition (`proto/v1/stock_store.proto`):
 syntax = "proto3";
 
 package stockstore.v1;
-option go_package = "stocker-store/proto/v1;stockstorev1";
+option go_package = "git.wheeli.ca/brian/stocker-store/proto/v1;stockstorev1";
 import "google/protobuf/timestamp.proto";
 
 service StockStore {
@@ -143,7 +159,7 @@ Message `StockUpdate` in package `stockerstore.kafka.v1`:
 syntax = "proto3";
 
 package stockerstore.kafka.v1;
-option go_package = "stocker-store/proto/v1/kafka;kafkastockv1";
+option go_package = "git.wheeli.ca/brian/stocker-store/proto/v1/kafka;kafkastockv1";
 import "google/protobuf/timestamp.proto";
 
 message ScoreEntry {

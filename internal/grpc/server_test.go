@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"stocker-store/internal/store"
-	st "stocker-store/proto/v1"
+	"git.wheeli.ca/brian/stocker-store/internal/store"
+	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 )
 
 // fakeStore is an in-memory implementation of the Store interface.

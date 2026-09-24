@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"stocker-store/internal/store"
-	kafkastockv1 "stocker-store/proto/v1/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/store"
+	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -38,7 +38,7 @@ func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scor
 
 // scoreByCat finds the score entry with the given category, failing the test if
 // it is not present.
-func scoreByCat(t *testing.T, entries []*kafkastockv1.ScoreEntry, cat string) *kafkastockv1.ScoreEntry {
+func scoreByCat(t *testing.T, entries []*stockv1.ScoreEntry, cat string) *stockv1.ScoreEntry {
 	t.Helper()
 	for _, e := range entries {
 		if e.GetCategory() == cat {
@@ -51,10 +51,10 @@ func scoreByCat(t *testing.T, entries []*kafkastockv1.ScoreEntry, cat string) *k
 
 // TestDecodeStock_HappyPath verifies a full protobuf round-trip with all fields.
 func TestDecodeStock_HappyPath(t *testing.T) {
-	protoMsg := &kafkastockv1.StockUpdate{
+	protoMsg := &stockv1.Stock{
 		Symbol:   "AAPL",
 		Exchange: "NASDAQ",
-		Scores: []*kafkastockv1.ScoreEntry{
+		Scores: []*stockv1.ScoreEntry{
 			{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
 			{Category: "value", Value: -0.25, UpdatedAt: timestamppb.New(time.Now())},
 		},
@@ -90,7 +90,7 @@ func TestDecodeStock_HappyPath(t *testing.T) {
 // message omits the scores field (nil), decodeStock returns an empty
 // (nil-tolerant) slice of scores.
 func TestDecodeStock_ScoresAbsentDefaultsToEmptySlice(t *testing.T) {
-	protoMsg := &kafkastockv1.StockUpdate{Symbol: "AAPL", Exchange: "NASDAQ"}
+	protoMsg := &stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"}
 	raw, err := proto.Marshal(protoMsg)
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
@@ -174,7 +174,7 @@ func TestHandle_MissingSymbolOrExchange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{}
 			c := New(Config{}, store)
-			msg := kafkastockv1.StockUpdate{Symbol: tc.symbol, Exchange: tc.exchange}
+			msg := stockv1.Stock{Symbol: tc.symbol, Exchange: tc.exchange}
 			raw, err := proto.Marshal(&msg)
 			if err != nil {
 				t.Fatalf("proto.Marshal() error = %v", err)
@@ -196,17 +196,17 @@ func TestHandle_MissingSymbolOrExchange(t *testing.T) {
 func TestHandle_ScoreOutOfRange(t *testing.T) {
 	testCases := []struct {
 		name   string
-		scores []*kafkastockv1.ScoreEntry
+		scores []*stockv1.ScoreEntry
 	}{
-		{"too high", []*kafkastockv1.ScoreEntry{{Category: "momentum", Value: 1.5}}},
-		{"too low", []*kafkastockv1.ScoreEntry{{Category: "value", Value: -2.0}}},
+		{"too high", []*stockv1.ScoreEntry{{Category: "momentum", Value: 1.5}}},
+		{"too low", []*stockv1.ScoreEntry{{Category: "value", Value: -2.0}}},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{}
 			c := New(Config{}, store)
-			msg := kafkastockv1.StockUpdate{
+			msg := stockv1.Stock{
 				Symbol:   "AAPL",
 				Exchange: "NASDAQ",
 				Scores:   tc.scores,
@@ -233,7 +233,7 @@ func TestHandle_StoreErrorPropagated(t *testing.T) {
 	wantErr := fmt.Errorf("connection refused")
 	store := &fakeStore{err: wantErr}
 	c := New(Config{}, store)
-	msg := kafkastockv1.StockUpdate{Symbol: "AAPL", Exchange: "NASDAQ"}
+	msg := stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"}
 	raw, _ := proto.Marshal(&msg)
 	err := c.handle(context.Background(), kafkaMsg.Message{Value: raw})
 	if err == nil {
@@ -245,13 +245,13 @@ func TestHandle_StoreErrorPropagated(t *testing.T) {
 }
 
 func TestHandle_HappyPath(t *testing.T) {
-	wantScores := []*kafkastockv1.ScoreEntry{
+	wantScores := []*stockv1.ScoreEntry{
 		{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
 		{Category: "value", Value: -0.25, UpdatedAt: timestamppb.New(time.Now())},
 	}
 	store := &fakeStore{}
 	c := New(Config{}, store)
-	msg := kafkastockv1.StockUpdate{
+	msg := stockv1.Stock{
 		Symbol:   "AAPL",
 		Exchange: "NASDAQ",
 		Scores:   wantScores,
@@ -291,11 +291,11 @@ func TestHandle_HappyPath(t *testing.T) {
 
 // TestDecodeStock_RoundTrip verifies a proto.Marshal + decodeStock round-trip.
 func TestDecodeStock_RoundTrip(t *testing.T) {
-	testMsgs := []*kafkastockv1.StockUpdate{
+	testMsgs := []*stockv1.Stock{
 		{
 			Symbol:   "TSLA",
 			Exchange: "NYSE",
-			Scores: []*kafkastockv1.ScoreEntry{
+			Scores: []*stockv1.ScoreEntry{
 				{Category: "momentum", Value: 0.5, UpdatedAt: timestamppb.New(time.Now())},
 				{Category: "value", Value: -0.3, UpdatedAt: timestamppb.New(time.Now())},
 			},
