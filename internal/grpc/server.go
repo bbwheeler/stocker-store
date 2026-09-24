@@ -29,7 +29,6 @@ type Store interface {
 
 // Server holds the dependencies for the gRPC service.
 type Server struct {
-	st.UnimplementedStockStoreServer
 	store Store
 }
 
@@ -41,7 +40,6 @@ func NewServer(store Store) *Server {
 // GRPCServer returns a new gRPC server with the StockStore service registered.
 func (s *Server) GRPCServer() *grpc.Server {
 	srv := grpc.NewServer()
-	st.RegisterStockStoreServer(srv, s)
 	return srv
 }
 
