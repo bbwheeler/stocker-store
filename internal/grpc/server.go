@@ -21,7 +21,7 @@ import (
 
 // Store exposes the data store methods needed by the gRPC handlers.
 type Store interface {
-	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
 	RemoveStock(ctx context.Context, symbol, exchange string) (bool, error)
 	GetStock(ctx context.Context, symbol string, exchange *string) (*store.Stock, error)
 	GetStocks(ctx context.Context, limit int32, exchange *string, minScores, maxScores map[string]float64) ([]store.Stock, error)
@@ -29,6 +29,7 @@ type Store interface {
 
 // Server holds the dependencies for the gRPC service.
 type Server struct {
+	st.UnimplementedStockStoreServer
 	store Store
 }
 
@@ -40,6 +41,7 @@ func NewServer(store Store) *Server {
 // GRPCServer returns a new gRPC server with the StockStore service registered.
 func (s *Server) GRPCServer() *grpc.Server {
 	srv := grpc.NewServer()
+	st.RegisterStockStoreServer(srv, s)
 	return srv
 }
 
@@ -58,7 +60,7 @@ func (s *Server) AddStocks(stream grpc.ClientStreamingServer[st.UpdateStockReque
 			return status.Errorf(codes.InvalidArgument, "add stocks: %v", err)
 		}
 
-		stock, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
+		stock, _, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
 		if err != nil {
 			log.Printf("update stock %s/%s: %v", req.GetSymbol(), req.GetExchange(), err)
 			return status.Errorf(codes.Internal, "update stock: %v", err)
@@ -79,7 +81,7 @@ func (s *Server) AddStocks(stream grpc.ClientStreamingServer[st.UpdateStockReque
 
 // UpdateStock upserts a stock and returns the updated record.
 func (s *Server) UpdateStock(ctx context.Context, req *st.UpdateStockRequest) (*st.Stock, error) {
-	stock, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
+	stock, _, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update stock: %v", err)
 	}

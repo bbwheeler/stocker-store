@@ -37,7 +37,7 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 	scores := map[string]float64{"momentum": 0.25}
 
 	// First update: timestamp should jump past the seeded (old) value.
-	got, err := s.UpdateStock(ctx, sym, exh, scores)
+	got, _, err := s.UpdateStock(ctx, sym, exh, scores)
 	if err != nil {
 		t.Fatalf("first UpdateStock: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 
 	// 2) Update with the exact same scores (no payload change) must still
 	// refresh the timestamp.
-	got2, err := s.UpdateStock(ctx, sym, exh, scores)
+	got2, _, err := s.UpdateStock(ctx, sym, exh, scores)
 	if err != nil {
 		t.Fatalf("second UpdateStock: %v", err)
 	}
@@ -77,12 +77,48 @@ func TestUpdateStockRefreshesTimestamp(t *testing.T) {
 
 	// 3) Update with no scores at all must still refresh the timestamp.
 	time.Sleep(50 * time.Millisecond)
-	got3, err := s.UpdateStock(ctx, sym, exh, nil)
+	got3, _, err := s.UpdateStock(ctx, sym, exh, nil)
 	if err != nil {
 		t.Fatalf("third UpdateStock (no scores): %v", err)
 	}
 	if !got3.Updated.After(got2.Updated) {
 		t.Fatalf("UpdateStock with no scores should still refresh timestamp: got %v (previously %v)", got3.Updated, got2.Updated)
+	}
+}
+
+// TestUpdateStockInsertedFlag verifies that the second return value of
+// UpdateStock is true on the first write to a (symbol, exchange) pair
+// (INSERT) and false on subsequent writes to the same pair (UPDATE).
+func TestUpdateStockInsertedFlag(t *testing.T) {
+	s := testStore(t)
+	defer s.Close()
+
+	sym, exh := uniqueTag()
+	defer clearStock(t, s, sym, exh)
+
+	ctx := context.Background()
+	scores := map[string]float64{"momentum": 0.25}
+
+	first, inserted, err := s.UpdateStock(ctx, sym, exh, scores)
+	if err != nil {
+		t.Fatalf("first UpdateStock: %v", err)
+	}
+	if inserted != true {
+		t.Fatalf("inserted = %v on first write, want true", inserted)
+	}
+	if first == nil {
+		t.Fatalf("first stock is nil")
+	}
+
+	second, inserted2, err := s.UpdateStock(ctx, sym, exh, scores)
+	if err != nil {
+		t.Fatalf("second UpdateStock: %v", err)
+	}
+	if inserted2 != false {
+		t.Fatalf("inserted = %v on second write, want false", inserted2)
+	}
+	if second == nil {
+		t.Fatalf("second stock is nil")
 	}
 }
 

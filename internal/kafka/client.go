@@ -18,7 +18,7 @@ import (
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
-	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
 }
 
 // Config holds the settings required to consume the stocks topic.
@@ -99,7 +99,7 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 		}
 	}
 
-	_, err = c.store.UpdateStock(ctx, m.Symbol, m.Exchange, toMap(m.GetScores()))
+	_, _, err = c.store.UpdateStock(ctx, m.Symbol, m.Exchange, toMap(m.GetScores()))
 	return err
 }
 

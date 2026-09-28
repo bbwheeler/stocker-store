@@ -19,7 +19,7 @@ import (
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type stockStore interface {
-	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
 }
 
 func main() {

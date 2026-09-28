@@ -38,9 +38,9 @@ func splitKey(k string) (exchange, symbol string) {
 	return k[:i], k[i+1:]
 }
 
-func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error) {
+func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
 	f.stocks[key(symbol, exchange)] = scores
-	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, nil
+	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, true, nil
 }
 
 func (f *fakeStore) RemoveStock(_ context.Context, symbol, exchange string) (bool, error) {

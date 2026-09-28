@@ -25,15 +25,15 @@ type fakeStore struct {
 	err        error
 }
 
-func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error) {
+func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
 	if f.err != nil {
-		return nil, f.err
+		return nil, false, f.err
 	}
 	f.called = true
 	f.lastSymbol = symbol
 	f.lastExch = exchange
 	f.lastScores = scores
-	return nil, nil
+	return &store.Stock{Symbol: symbol, Exchange: exchange, Updated: time.Now()}, true, nil
 }
 
 // scoreByCat finds the score entry with the given category, failing the test if
