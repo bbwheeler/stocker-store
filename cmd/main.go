@@ -133,11 +133,14 @@ func runKafkaSubscriber(ctx context.Context, st stockStore) error {
 		groupID = "stocker-store"
 	}
 
+	// NOTE: minimal bridge so the tree compiles after kafka.New gained a
+	// Publisher argument (Step 3). Step 5 replaces Noop{} with a real
+	// publisher and renames KAFKA_TOPIC to KAFKA_INPUT_TOPIC.
 	client := kafka.New(kafka.Config{
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
-	}, st)
+	}, st, kafka.Noop{})
 
 	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
 	return client.Run(ctx)

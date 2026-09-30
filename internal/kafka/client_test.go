@@ -22,6 +22,7 @@ type fakeStore struct {
 	lastSymbol string
 	lastExch   string
 	lastScores map[string]float64
+	inserted   bool
 	err        error
 }
 
@@ -33,8 +34,42 @@ func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scor
 	f.lastSymbol = symbol
 	f.lastExch = exchange
 	f.lastScores = scores
-	return &store.Stock{Symbol: symbol, Exchange: exchange, Updated: time.Now()}, true, nil
+	return &store.Stock{
+		Symbol:   symbol,
+		Exchange: exchange,
+		Updated:  time.Now(),
+		Scores:   toStoreScores(scores),
+	}, f.inserted, nil
 }
+
+// toStoreScores inverts toMap for test fixtures: it expands a category->value
+// map into the slice the production store returns.
+func toStoreScores(m map[string]float64) []store.ScoreEntry {
+	if m == nil {
+		return nil
+	}
+	out := make([]store.ScoreEntry, 0, len(m))
+	for cat, v := range m {
+		out = append(out, store.ScoreEntry{Category: cat, Value: v, UpdatedAt: time.Now()})
+	}
+	return out
+}
+
+// fakePublisher is a test double for the Publisher interface that records
+// calls and can optionally inject an error.
+type fakePublisher struct {
+	called    int
+	lastStock *stockv1.Stock
+	err       error
+}
+
+func (f *fakePublisher) Publish(_ context.Context, stock *stockv1.Stock) error {
+	f.called++
+	f.lastStock = stock
+	return f.err
+}
+
+func (f *fakePublisher) Close() error { return nil }
 
 // scoreByCat finds the score entry with the given category, failing the test if
 // it is not present.
@@ -173,7 +208,7 @@ func TestHandle_MissingSymbolOrExchange(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{}
-			c := New(Config{}, store)
+			c := New(Config{}, store, &fakePublisher{})
 			msg := stockv1.Stock{Symbol: tc.symbol, Exchange: tc.exchange}
 			raw, err := proto.Marshal(&msg)
 			if err != nil {
@@ -205,7 +240,7 @@ func TestHandle_ScoreOutOfRange(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{}
-			c := New(Config{}, store)
+			c := New(Config{}, store, &fakePublisher{})
 			msg := stockv1.Stock{
 				Symbol:   "AAPL",
 				Exchange: "NASDAQ",
@@ -232,7 +267,7 @@ func TestHandle_ScoreOutOfRange(t *testing.T) {
 func TestHandle_StoreErrorPropagated(t *testing.T) {
 	wantErr := fmt.Errorf("connection refused")
 	store := &fakeStore{err: wantErr}
-	c := New(Config{}, store)
+	c := New(Config{}, store, &fakePublisher{})
 	msg := stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"}
 	raw, _ := proto.Marshal(&msg)
 	err := c.handle(context.Background(), kafkaMsg.Message{Value: raw})
@@ -250,7 +285,7 @@ func TestHandle_HappyPath(t *testing.T) {
 		{Category: "value", Value: -0.25, UpdatedAt: timestamppb.New(time.Now())},
 	}
 	store := &fakeStore{}
-	c := New(Config{}, store)
+	c := New(Config{}, store, &fakePublisher{})
 	msg := stockv1.Stock{
 		Symbol:   "AAPL",
 		Exchange: "NASDAQ",
@@ -328,5 +363,136 @@ func TestDecodeStock_RoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---- publisher tests ----
+
+// TestHandle_PublishesOnNewStock verifies that when the store reports INSERT,
+// the publisher is called exactly once with a stock matching the stored one.
+func TestHandle_PublishesOnNewStock(t *testing.T) {
+	store := &fakeStore{inserted: true}
+	pub := &fakePublisher{}
+	c := New(Config{}, store, pub)
+	raw, err := proto.Marshal(&stockv1.Stock{
+		Symbol:   "AAPL",
+		Exchange: "NASDAQ",
+		Scores:   []*stockv1.ScoreEntry{{Category: "momentum", Value: 0.5}},
+	})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	if err := c.handle(context.Background(), kafkaMsg.Message{Value: raw}); err != nil {
+		t.Fatalf("handle() error = %v, want nil", err)
+	}
+	if !store.called {
+		t.Fatal("store.UpdateStock not called, want it called")
+	}
+	if store.lastSymbol != "AAPL" || store.lastExch != "NASDAQ" {
+		t.Errorf("store not called correctly: %q/%q", store.lastSymbol, store.lastExch)
+	}
+	if pub.called != 1 {
+		t.Fatalf("publisher called %d times, want 1", pub.called)
+	}
+	if got := pub.lastStock.GetSymbol(); got != "AAPL" {
+		t.Errorf("published symbol = %q, want %q", got, "AAPL")
+	}
+	if got := pub.lastStock.GetExchange(); got != "NASDAQ" {
+		t.Errorf("published exchange = %q, want %q", got, "NASDAQ")
+	}
+	if got := len(pub.lastStock.GetScores()); got != 1 {
+		t.Fatalf("published scores len = %d, want 1", got)
+	}
+	if got := scoreByCat(t, pub.lastStock.GetScores(), "momentum").GetValue(); got != 0.5 {
+		t.Errorf("published scores[momentum] = %v, want 0.5", got)
+	}
+}
+
+// TestHandle_DoesNotPublishOnUpdate verifies that when the store reports
+// UPDATE (inserted=false), the publisher is not called.
+func TestHandle_DoesNotPublishOnUpdate(t *testing.T) {
+	store := &fakeStore{inserted: false}
+	pub := &fakePublisher{}
+	c := New(Config{}, store, pub)
+	raw, err := proto.Marshal(&stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	if err := c.handle(context.Background(), kafkaMsg.Message{Value: raw}); err != nil {
+		t.Fatalf("handle() error = %v, want nil", err)
+	}
+	if !store.called {
+		t.Fatal("store.UpdateStock not called, want it called")
+	}
+	if pub.called != 0 {
+		t.Fatalf("publisher called %d times, want 0 (update of an existing stock)", pub.called)
+	}
+}
+
+// TestHandle_DoesNotPublishWhenStoreErrors verifies that a store error is
+// propagated and the publisher is not called.
+func TestHandle_DoesNotPublishWhenStoreErrors(t *testing.T) {
+	wantErr := fmt.Errorf("connection refused")
+	store := &fakeStore{err: wantErr}
+	pub := &fakePublisher{}
+	c := New(Config{}, store, pub)
+	raw, _ := proto.Marshal(&stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"})
+	err := c.handle(context.Background(), kafkaMsg.Message{Value: raw})
+	if err != wantErr {
+		t.Fatalf("handle() error = %v, want %v", err, wantErr)
+	}
+	if pub.called != 0 {
+		t.Fatalf("publisher called %d times, want 0 (store failed)", pub.called)
+	}
+}
+
+// TestHandle_PublishErrorDoesNotFailTheMessage verifies that a failed publish
+// is logged (not returned): the handler still reports success because the DB
+// write is authoritative.
+func TestHandle_PublishErrorDoesNotFailTheMessage(t *testing.T) {
+	store := &fakeStore{inserted: true}
+	pub := &fakePublisher{err: fmt.Errorf("kafka unavailable")}
+	c := New(Config{}, store, pub)
+	raw, err := proto.Marshal(&stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	err = c.handle(context.Background(), kafkaMsg.Message{Value: raw})
+	if err != nil {
+		t.Fatalf("handle() returned %v, want nil (publish must be log-and-continue)", err)
+	}
+	if !store.called {
+		t.Fatal("store.UpdateStock not called, want it called")
+	}
+	if pub.called != 1 {
+		t.Fatalf("publisher called %d times, want 1", pub.called)
+	}
+}
+
+// TestPublisher_RealAndNoop covers NewPublisher's two branches: the no-op
+// returned when brokers or topic are missing, and the writer-backed impl
+// returned when both are present.
+func TestPublisher_RealAndNoop(t *testing.T) {
+	// No-op branch.
+	p := NewPublisher(nil, "")
+	if _, ok := p.(Noop); !ok {
+		t.Fatalf("NewPublisher(nil, \"\") = %T, want Noop", p)
+	}
+	if err := p.Publish(context.Background(), &stockv1.Stock{}); err != nil {
+		t.Errorf("noop Publish error = %v, want nil", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Errorf("noop Close error = %v, want nil", err)
+	}
+
+	// Real-writer branch: nothing is actually sent to a broker; we only check
+	// that the returned publisher is the writer-backed impl and that close is
+	// safe.
+	p2 := NewPublisher([]string{"localhost:1"}, "topic")
+	if _, ok := p2.(*writerPublisher); !ok {
+		t.Fatalf("NewPublisher(brokers, topic) = %T, want *writerPublisher", p2)
+	}
+	if err := p2.Close(); err != nil {
+		t.Errorf("writer Close error = %v, want nil (closed without writes)", err)
 	}
 }
