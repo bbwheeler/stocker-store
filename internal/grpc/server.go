@@ -9,6 +9,7 @@ import (
 	"log"
 	"strings"
 
+	"git.wheeli.ca/brian/stocker-store/internal/kafka"
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 
@@ -30,12 +31,17 @@ type Store interface {
 // Server holds the dependencies for the gRPC service.
 type Server struct {
 	st.UnimplementedStockStoreServer
-	store Store
+	store     Store
+	publisher kafka.Publisher
 }
 
-// NewServer creates a new Server with the given store.
-func NewServer(store Store) *Server {
-	return &Server{store: store}
+// NewServer creates a new Server with the given store and event publisher. A
+// nil publisher is accepted and replaced by a no-op.
+func NewServer(store Store, publisher kafka.Publisher) *Server {
+	if publisher == nil {
+		publisher = kafka.Noop{}
+	}
+	return &Server{store: store, publisher: publisher}
 }
 
 // GRPCServer returns a new gRPC server with the StockStore service registered.
@@ -60,10 +66,15 @@ func (s *Server) AddStocks(stream grpc.ClientStreamingServer[st.UpdateStockReque
 			return status.Errorf(codes.InvalidArgument, "add stocks: %v", err)
 		}
 
-		stock, _, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
+		stock, inserted, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
 		if err != nil {
 			log.Printf("update stock %s/%s: %v", req.GetSymbol(), req.GetExchange(), err)
 			return status.Errorf(codes.Internal, "update stock: %v", err)
+		}
+		if inserted {
+			if perr := s.publisher.Publish(ctx, toProtoStock(stock)); perr != nil {
+				log.Printf("add stocks: failed to publish new stock %s/%s: %v", stock.Symbol, stock.Exchange, perr)
+			}
 		}
 		last = stock
 	}
@@ -81,9 +92,14 @@ func (s *Server) AddStocks(stream grpc.ClientStreamingServer[st.UpdateStockReque
 
 // UpdateStock upserts a stock and returns the updated record.
 func (s *Server) UpdateStock(ctx context.Context, req *st.UpdateStockRequest) (*st.Stock, error) {
-	stock, _, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
+	stock, inserted, err := s.store.UpdateStock(ctx, req.GetSymbol(), req.GetExchange(), req.GetScores())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update stock: %v", err)
+	}
+	if inserted {
+		if perr := s.publisher.Publish(ctx, toProtoStock(stock)); perr != nil {
+			log.Printf("update stock: failed to publish new stock %s/%s: %v", stock.Symbol, stock.Exchange, perr)
+		}
 	}
 	return toProtoStock(stock), nil
 }

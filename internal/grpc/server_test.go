@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"git.wheeli.ca/brian/stocker-store/internal/kafka"
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 )
@@ -39,8 +40,10 @@ func splitKey(k string) (exchange, symbol string) {
 }
 
 func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
-	f.stocks[key(symbol, exchange)] = scores
-	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, true, nil
+	k := key(symbol, exchange)
+	_, seen := f.stocks[k]
+	f.stocks[k] = scores
+	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, !seen, nil
 }
 
 func (f *fakeStore) RemoveStock(_ context.Context, symbol, exchange string) (bool, error) {
@@ -107,10 +110,30 @@ func toDomainScores(m map[string]float64) []store.ScoreEntry {
 
 var _ Store = (*fakeStore)(nil)
 
-func newTestClient(t *testing.T, backend Store) st.StockStoreClient {
+// fakePublisher is a test double for kafka.Publisher that records calls and
+// can optionally inject a publish error. st and stockv1 name the same
+// protobuf package, so Publish(_ context.Context, *st.Stock) error satisfies
+// the interface.
+type fakePublisher struct {
+	called    int
+	lastStock *st.Stock
+	err       error
+}
+
+func (f *fakePublisher) Publish(_ context.Context, stock *st.Stock) error {
+	f.called++
+	f.lastStock = stock
+	return f.err
+}
+
+func (f *fakePublisher) Close() error { return nil }
+
+var _ kafka.Publisher = (*fakePublisher)(nil)
+
+func newTestClient(t *testing.T, backend Store, publisher kafka.Publisher) st.StockStoreClient {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	server := NewServer(backend).GRPCServer()
+	server := NewServer(backend, publisher).GRPCServer()
 	go server.Serve(lis)
 	t.Cleanup(server.Stop)
 
@@ -127,7 +150,7 @@ func newTestClient(t *testing.T, backend Store) st.StockStoreClient {
 
 func TestUpdateStock(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs)
+	client := newTestClient(t, fs, kafka.Noop{})
 	ctx := context.Background()
 
 	stock, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
@@ -152,7 +175,7 @@ func TestUpdateStock(t *testing.T) {
 }
 
 func TestRemoveStock(t *testing.T) {
-	client := newTestClient(t, newFakeStore())
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
 	ctx := context.Background()
 
 	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{Symbol: "MSFT", Exchange: "NASDAQ"}); err != nil {
@@ -177,7 +200,7 @@ func TestRemoveStock(t *testing.T) {
 }
 
 func TestGetStock(t *testing.T) {
-	client := newTestClient(t, newFakeStore())
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
 	ctx := context.Background()
 
 	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
@@ -201,7 +224,7 @@ func TestGetStock(t *testing.T) {
 }
 
 func TestGetStock_NotFound(t *testing.T) {
-	client := newTestClient(t, newFakeStore())
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
 	_, err := client.GetStock(context.Background(), &st.GetStockRequest{Symbol: "NOPE"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)
@@ -209,7 +232,7 @@ func TestGetStock_NotFound(t *testing.T) {
 }
 
 func TestGetStocks_Filters(t *testing.T) {
-	client := newTestClient(t, newFakeStore())
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -256,7 +279,7 @@ func TestGetStocks_Filters(t *testing.T) {
 
 func TestAddStocks(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs)
+	client := newTestClient(t, fs, kafka.Noop{})
 	ctx := context.Background()
 
 	stream, err := client.AddStocks(ctx)
@@ -286,12 +309,121 @@ func TestAddStocks(t *testing.T) {
 }
 
 func TestAddStocks_EmptyStream(t *testing.T) {
-	client := newTestClient(t, newFakeStore())
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
 	stream, err := client.AddStocks(context.Background())
 	if err != nil {
 		t.Fatalf("AddStocks: %v", err)
 	}
 	if _, err := stream.CloseAndRecv(); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for empty stream, got %v", err)
+	}
+}
+
+// ---- publisher tests (Step 4) ----
+
+// TestUpdateStock_PublishesOnNewStock verifies that a successful insert
+// triggers exactly one publish of the stored stock.
+func TestUpdateStock_PublishesOnNewStock(t *testing.T) {
+	fs := newFakeStore()
+	pub := &fakePublisher{}
+	client := newTestClient(t, fs, pub)
+	resp, err := client.UpdateStock(context.Background(),
+		&st.UpdateStockRequest{Symbol: "AAPL", Exchange: "NASDAQ",
+			Scores: map[string]float64{"momentum": 0.5}})
+	if err != nil {
+		t.Fatalf("UpdateStock: %v", err)
+	}
+	if resp.GetSymbol() != "AAPL" || resp.GetExchange() != "NASDAQ" {
+		t.Fatalf("unexpected stock: %v", resp)
+	}
+	if pub.called != 1 {
+		t.Fatalf("publisher called %d times, want 1", pub.called)
+	}
+	if pub.lastStock.GetSymbol() != "AAPL" || pub.lastStock.GetExchange() != "NASDAQ" {
+		t.Errorf("published stock = %v", pub.lastStock)
+	}
+	var momentum *st.ScoreEntry
+	for _, e := range pub.lastStock.GetScores() {
+		if e.GetCategory() == "momentum" {
+			momentum = e
+		}
+	}
+	if momentum == nil || momentum.GetValue() != 0.5 {
+		t.Errorf("published scores = %v, want momentum=0.5", pub.lastStock.GetScores())
+	}
+}
+
+// TestUpdateStock_DoesNotPublishOnUpdate verifies that an UPDATE
+// (inserted=false, i.e. re-upserting an existing (symbol, exchange)) does not
+// publish.
+func TestUpdateStock_DoesNotPublishOnUpdate(t *testing.T) {
+	fs := newFakeStore()
+	pub := &fakePublisher{}
+	client := newTestClient(t, fs, pub)
+	req := &st.UpdateStockRequest{Symbol: "AAPL", Exchange: "NASDAQ",
+		Scores: map[string]float64{"momentum": 0.25}}
+	// First write: INSERT.
+	if _, err := client.UpdateStock(context.Background(), req); err != nil {
+		t.Fatalf("first UpdateStock: %v", err)
+	}
+	if pub.called != 1 {
+		t.Fatalf("after insert publisher called %d times, want 1", pub.called)
+	}
+	// Second write to the same (symbol, exchange) pair: UPDATE.
+	if _, err := client.UpdateStock(context.Background(),
+		&st.UpdateStockRequest{Symbol: "AAPL", Exchange: "NASDAQ",
+			Scores: map[string]float64{"momentum": 0.5}}); err != nil {
+		t.Fatalf("second UpdateStock: %v", err)
+	}
+	if pub.called != 1 {
+		t.Fatalf("after update publisher called %d times, want 1 (no new publish)", pub.called)
+	}
+}
+
+// TestAddStocks_PublishesPerNewStock verifies each INSERT in the stream
+// triggers exactly one publish.
+func TestAddStocks_PublishesPerNewStock(t *testing.T) {
+	fs := newFakeStore()
+	pub := &fakePublisher{}
+	client := newTestClient(t, fs, pub)
+	stream, err := client.AddStocks(context.Background())
+	if err != nil {
+		t.Fatalf("AddStocks: %v", err)
+	}
+	for i, sym := range []string{"S1", "S2", "S3"} {
+		if err := stream.Send(&st.UpdateStockRequest{
+			Symbol:   sym,
+			Exchange: "EXX",
+			Scores:   map[string]float64{"alpha": float64(i - 1)},
+		}); err != nil {
+			t.Fatalf("Send %s: %v", sym, err)
+		}
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv: %v", err)
+	}
+	if pub.called != 3 {
+		t.Fatalf("publisher called %d times, want 3 (one per new stock)", pub.called)
+	}
+}
+
+// TestUpdateStock_PublishErrorDoesNotFailResponse verifies that a Publish
+// failure is logged (not returned): the response is still successful because
+// the DB write is authoritative.
+func TestUpdateStock_PublishErrorDoesNotFailResponse(t *testing.T) {
+	fs := newFakeStore()
+	pub := &fakePublisher{err: errors.New("publish failed")}
+	client := newTestClient(t, fs, pub)
+	resp, err := client.UpdateStock(context.Background(),
+		&st.UpdateStockRequest{Symbol: "AAPL", Exchange: "NASDAQ",
+			Scores: map[string]float64{"v": 0.1}})
+	if err != nil {
+		t.Fatalf("UpdateStock returned %v, want nil (publish is log-and-continue)", err)
+	}
+	if resp.GetSymbol() != "AAPL" {
+		t.Errorf("stock = %v, want symbol AAPL", resp)
+	}
+	if pub.called != 1 {
+		t.Fatalf("publisher called %d times, want 1", pub.called)
 	}
 }
