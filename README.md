@@ -186,7 +186,13 @@ If validation fails (or the raw bytes are not valid PROTOBUF), the message is **
 
 > **Timestamps:** the server stamps each written score with its **own clock** (`now()`) on write; the stored value read back in gRPC responses is authoritative. Any `updated_at` a Kafka producer sends is **advisory only** — the server accepts and discards it.
 
-Kafka ingestion is a **no-op unless both `KAFKA_BROKERS` and `KAFKA_TOPIC` are set** — see [Configuration](#configuration). Produce these messages via `proto/v1/kafka/README.md` (Go module, git submodule, or copy).
+Kafka ingestion (**input**) is a **no-op unless BOTH `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set**. New-stock publishing (**output**) is a no-op unless BOTH `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set. The two directions are independent — see [Configuration](#configuration). Produce these messages via `proto/v1/kafka/README.md` (Go module, git submodule, or copy).
+
+### New-Stock Output
+
+In addition to ingesting on `KAFKA_INPUT_TOPIC`, the service can **publish** a `Stock` message (the same PROTOBUF-encoded message gRPC returns) to a separate `KAFKA_OUTPUT_TOPIC` whenever a **new** `(symbol, exchange)` pair is written for the first time (an `INSERT` into the `stocks` table, not an update to an existing one). The two directions are independent: enable input only, output only, both, or neither.
+
+Publish is best-effort — a failure is logged and the gRPC / Kafka handler still reports success (the DB write is authoritative). The published message is the authoritative, server-stamped stock (all scores including their `updated_at` timestamps), not the raw input as received.
 
 ## Configuration
 
@@ -198,11 +204,12 @@ Configuration is entirely via environment variables. The **single most important
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes (in practice) | `postgres://localhost:5432/stocker?sslmode=disable` | PostgreSQL DSN: `scheme://user:pass@host:port/db?sslmode=...` | The single Postgres connection string. Set this to point at your database. |
 | `STOCK_TTL` | No | `720h` (30 days) | Go duration string, e.g. `48h`, `720h`; `0` (or any non-positive value) **disables** expiry | Retention window for stale-stock auto-removal. Cleanup runs once at startup, then hourly. |
-| `KAFKA_BROKERS` | No (Kafka only) | — | Comma-separated `host:port` list, e.g. `broker1:9092,broker2:9092` | Kafka brokers to consume from. |
-| `KAFKA_TOPIC` | No (Kafka only) | — | Topic name (e.g. `stockers`) | The topic to consume stock events from. |
+| `KAFKA_BROKERS` | No (Kafka only) | — | Comma-separated `host:port` list, e.g. `broker1:9092,broker2:9092` | Kafka brokers, used for **both** consuming stock events (input) and publishing new-stock `Stock` messages (output). |
+| `KAFKA_INPUT_TOPIC` | No (Kafka only) | — | Topic name (e.g. `stockers`) | The topic to **consume** stock events from. |
 | `KAFKA_GROUP_ID` | No (Kafka only) | `stocker-store` | Consumer group id (string) | Kafka consumer group, for partition assignment across replicas. |
+| `KAFKA_OUTPUT_TOPIC` | No (Kafka only) | — | Topic name (e.g. `stockers-new`) | The topic to **publish** new-stock `Stock` messages on. |
 
-> **Key rule:** Kafka ingestion is a **no-op unless BOTH `KAFKA_BROKERS` and `KAFKA_TOPIC` are set.** Otherwise the service runs as pure gRPC.
+> **Key rule:** Kafka ingestion (input) is a **no-op unless BOTH `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set.** New-stock publish (output) is a **no-op unless BOTH `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set.** The two directions are independent — enable input only, output only, both, or neither. Otherwise the service runs as pure gRPC.
 >
 > **Minimal deployment requires only `DATABASE_URL`.**
 
@@ -219,10 +226,13 @@ DATABASE_URL=postgres://user:PASSWORD@localhost:5432/stocker?sslmode=disable
 # Optional — stock retention as a Go duration (default 720h / 30 days); "0" disables.
 # STOCK_TTL=720h
 
-# Optional — Kafka ingestion (BROKERS and TOPIC must both be set to enable).
+# Optional — Kafka input/ingestion (BROKERS and INPUT topic both required to enable input).
 # KAFKA_BROKERS=localhost:9092
-# KAFKA_TOPIC=stockers
+# KAFKA_INPUT_TOPIC=stockers
 # KAFKA_GROUP_ID=stocker-store
+
+# Optional — New-stock output (BROKERS and OUTPUT topic both required to enable output).
+# KAFKA_OUTPUT_TOPIC=stockers-new
 ```
 
 ### Test-only variable
@@ -368,7 +378,7 @@ AGENTS.md                      # agent-oriented notes
 ## Troubleshooting & Notes
 
 - **Minimal configuration:** only `DATABASE_URL` is required. `STOCK_TTL` and the `KAFKA_*` variables are optional.
-- **Kafka is optional:** ingestion is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_TOPIC` are set.
+- **Kafka is optional:** ingestion (**input**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set, and new-stock publishing (**output**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set — the two directions are independent.
 - **The real port is 3500, not 50051:** the gRPC server listens on `:3500`. The `EXPOSE 50051` line in the `Containerfile` is stale metadata — connect on **`:3500`**.
 - **`GetStocks` requires `limit > 0`:** an unset or `0` `limit` returns an empty list.
 - **Authoritative deployment variables** are the ones in the [Configuration](#configuration) section: `DATABASE_URL`, `STOCK_TTL`, and the `KAFKA_*` variables.
