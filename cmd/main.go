@@ -19,7 +19,7 @@ import (
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type stockStore interface {
-	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, error)
+	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
 }
 
 func main() {
@@ -45,7 +45,14 @@ func main() {
 	}
 	defer st.Close()
 
-	server := grpc.NewServer(st)
+	// Construct the publisher once; it is a no-op unless both KAFKA_BROKERS
+	// and KAFKA_OUTPUT_TOPIC are set. It is shared by the gRPC server and the
+	// kafka input subscriber so that *any* path that creates a new stock emits
+	// the event.
+	brokers := envList("KAFKA_BROKERS")
+	publisher := kafka.NewPublisher(brokers, os.Getenv("KAFKA_OUTPUT_TOPIC"))
+
+	server := grpc.NewServer(st, publisher)
 
 	lis, err := net.Listen("tcp", ":3500")
 	if err != nil {
@@ -64,7 +71,7 @@ func main() {
 
 	log.Println("stocker-store listening on :3500")
 
-	if err := runKafkaSubscriber(ctx, st); err != nil {
+	if err := runKafkaSubscriber(ctx, st, publisher); err != nil {
 		log.Printf("kafka subscriber: %v", err)
 	}
 
@@ -72,6 +79,10 @@ func main() {
 	log.Println("shutting down...")
 
 	gRPCServer.GracefulStop()
+	// Flush in-flight publisher writes before exiting.
+	if err := publisher.Close(); err != nil {
+		log.Printf("close publisher: %v", err)
+	}
 	cancel()
 }
 
@@ -120,11 +131,11 @@ func runRetention(ctx context.Context, st *store.Store) {
 	}
 }
 
-func runKafkaSubscriber(ctx context.Context, st stockStore) error {
+func runKafkaSubscriber(ctx context.Context, st stockStore, publisher kafka.Publisher) error {
 	brokers := envList("KAFKA_BROKERS")
-	topic := os.Getenv("KAFKA_TOPIC")
+	topic := os.Getenv("KAFKA_INPUT_TOPIC")
 	if len(brokers) == 0 || topic == "" {
-		log.Printf("KAFKA_BROKERS and KAFKA_TOPIC required")
+		log.Printf("KAFKA_BROKERS and KAFKA_INPUT_TOPIC required for kafka ingestion")
 		return nil
 	}
 
@@ -137,7 +148,7 @@ func runKafkaSubscriber(ctx context.Context, st stockStore) error {
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
-	}, st)
+	}, st, publisher)
 
 	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
 	return client.Run(ctx)

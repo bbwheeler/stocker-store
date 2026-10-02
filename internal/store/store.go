@@ -67,21 +67,26 @@ func (s *Store) initializeTables(ctx context.Context) error {
 	return nil
 }
 
-// UpdateStock updates a stock and optionally its scores. Returns the updated stock record.
-func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*Stock, error) {
+// UpdateStock upserts a stock and optionally its scores. Returns the updated
+// stock record and a bool indicating whether the upsert was an INSERT
+// (newly-created (symbol, exchange) pair) rather than an UPDATE of an
+// existing row.
+func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*Stock, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
+		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
+	var inserted bool
+	err = tx.QueryRow(ctx, `
 		INSERT INTO stocks (symbol, exchange, timestamp)
 		VALUES ($1, $2, now())
 		ON CONFLICT (symbol, exchange) DO UPDATE SET timestamp = now()
-	`, symbol, exchange)
+		RETURNING (xmax = 0) AS inserted
+	`, symbol, exchange).Scan(&inserted)
 	if err != nil {
-		return nil, fmt.Errorf("update stock: %w", err)
+		return nil, false, fmt.Errorf("update stock: %w", err)
 	}
 
 	if len(scores) > 0 {
@@ -94,29 +99,29 @@ func (s *Store) UpdateStock(ctx context.Context, symbol, exchange string, scores
 
 		for cat, val := range scores {
 			if _, err := tx.Exec(ctx, upsertScore, symbol, exchange, cat, val); err != nil {
-				return nil, fmt.Errorf("upsert score %s: %w", cat, err)
+				return nil, false, fmt.Errorf("upsert score %s: %w", cat, err)
 			}
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
+		return nil, false, fmt.Errorf("commit tx: %w", err)
 	}
 
 	var ts time.Time
 	if err := s.pool.QueryRow(ctx,
 		`SELECT timestamp FROM stocks WHERE symbol = $1 AND exchange = $2`,
 		symbol, exchange).Scan(&ts); err != nil {
-		return nil, fmt.Errorf("get stock timestamp after update: %w", err)
+		return nil, false, fmt.Errorf("get stock timestamp after update: %w", err)
 	}
 
 	stock := &Stock{Symbol: symbol, Exchange: exchange, Updated: ts}
 	stock.Scores, err = s.getStockScores(ctx, symbol, exchange)
 	if err != nil {
-		return nil, fmt.Errorf("get stock scores after update: %w", err)
+		return nil, false, fmt.Errorf("get stock scores after update: %w", err)
 	}
 
-	return stock, nil
+	return stock, inserted, nil
 }
 
 // RemoveOldStocks deletes stocks (and their dependent scores) whose timestamp is
