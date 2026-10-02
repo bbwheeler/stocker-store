@@ -319,7 +319,7 @@ func TestAddStocks_EmptyStream(t *testing.T) {
 	}
 }
 
-// ---- publisher tests (Step 4) ----
+// ---- publisher tests ----
 
 // TestUpdateStock_PublishesOnNewStock verifies that a successful insert
 // triggers exactly one publish of the stored stock.
