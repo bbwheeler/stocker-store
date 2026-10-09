@@ -10,12 +10,18 @@ service StockStore {
 	rpc RemoveStock(RemoveStockRequest) returns (RemoveStockResponse);
 	rpc GetStock(GetStockRequest) returns (Stock);
 	rpc GetStocks(GetStocksRequest) returns (StockList);
+	rpc TopStocks(TopStocksRequest) returns (StockList);
 }
 
 message UpdateStockRequest { string symbol = 1; string exchange = 2; map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message GetStockRequest { string symbol = 1; optional string exchange = 2; }
 message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
+message TopStocksRequest {
+  int32 limit = 1;
+  string category = 2;
+  optional string exchange = 3;
+}
 message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry {
