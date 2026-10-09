@@ -229,3 +229,146 @@ func TestRemoveOldStocksConfigurableRetention(t *testing.T) {
 		t.Fatalf("stock should still exist after applying the default window")
 	}
 }
+
+// TestTopStocks verifies deterministic top-N retrieval by score value in a
+// category, optional exchange scoping, deterministic tie-breaking (value DESC,
+// then symbol ASC), score hydration, and the empty-input/empty-result cases.
+func TestTopStocks(t *testing.T) {
+	s := testStore(t)
+	defer s.Close()
+
+	baseSym, baseExh := uniqueTag()
+	ex1 := "EX1_" + baseExh
+	ex2 := "EX2_" + baseExh
+	a, b, c, d := baseSym+"A", baseSym+"B", baseSym+"C", baseSym+"D"
+
+	defer clearStock(t, s, a, ex1)
+	defer clearStock(t, s, b, ex1)
+	defer clearStock(t, s, c, ex2)
+	defer clearStock(t, s, d, ex2)
+
+	ctx := context.Background()
+	now := time.Now()
+
+	seedStock(t, s, a, ex1, now)
+	seedStock(t, s, b, ex1, now)
+	seedStock(t, s, c, ex2, now)
+	seedStock(t, s, d, ex2, now)
+	seedScore(t, s, a, ex1, "sentiment", 0.9, now)
+	seedScore(t, s, b, ex1, "sentiment", 0.5, now)
+	seedScore(t, s, c, ex2, "sentiment", 0.95, now)
+	seedScore(t, s, d, ex2, "sentiment", 0.5, now)
+	// Unrelated category on A must not influence the "sentiment" ranking.
+	seedScore(t, s, a, ex1, "momentum", 0.3, now)
+
+	pairs := func(stocks []Stock) []string {
+		got := make([]string, len(stocks))
+		for i, st := range stocks {
+			got[i] = st.Symbol + "/" + st.Exchange
+		}
+		return got
+	}
+	assertOrder := func(name string, want []string, limit int32, category string, exchange *string) []Stock {
+		t.Helper()
+		got, err := s.TopStocks(ctx, limit, category, exchange)
+		if err != nil {
+			t.Fatalf("%s: TopStocks: %v", name, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d stocks %v, want %d %v", name, len(got), pairs(got), len(want), want)
+		}
+		if diff := pairs(got); !equalStrings(diff, want) {
+			t.Fatalf("%s: order = %v, want %v", name, diff, want)
+		}
+		return got
+	}
+
+	t.Run("limit returns top ordered", func(t *testing.T) {
+		assertOrder("limit 2", []string{c + "/" + ex2, a + "/" + ex1}, 2, "sentiment", nil)
+	})
+
+	t.Run("exchange scoped", func(t *testing.T) {
+		assertOrder("ex1", []string{a + "/" + ex1, b + "/" + ex1}, 10, "sentiment", &ex1)
+	})
+
+	t.Run("all with deterministic tie break", func(t *testing.T) {
+		got := assertOrder("all", []string{c + "/" + ex2, a + "/" + ex1, b + "/" + ex1, d + "/" + ex2}, 10, "sentiment", nil)
+
+		// Scores must be hydrated; A carries both its sentiment and momentum scores.
+		var stockA *Stock
+		for i := range got {
+			if got[i].Symbol == a && got[i].Exchange == ex1 {
+				stockA = &got[i]
+			}
+		}
+		if stockA == nil {
+			t.Fatalf("stock A not present in result")
+		}
+		if len(stockA.Scores) != 2 {
+			t.Fatalf("stock A scores = %v, want 2 entries", stockA.Scores)
+		}
+		sentiment := scoreByCategory(stockA.Scores, "sentiment")
+		if sentiment == nil {
+			t.Fatalf("stock A missing sentiment score: %v", stockA.Scores)
+		}
+		if sentiment.Value != 0.9 {
+			t.Fatalf("stock A sentiment = %v, want 0.9", sentiment.Value)
+		}
+	})
+
+	t.Run("non-positive limit", func(t *testing.T) {
+		got, err := s.TopStocks(ctx, 0, "sentiment", nil)
+		if err != nil {
+			t.Fatalf("limit 0: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("limit 0: want non-nil empty slice")
+		}
+		if len(got) != 0 {
+			t.Fatalf("limit 0: got %d stocks, want 0", len(got))
+		}
+	})
+
+	t.Run("empty category", func(t *testing.T) {
+		got, err := s.TopStocks(ctx, 10, "", nil)
+		if err != nil {
+			t.Fatalf("empty category: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("empty category: got %d stocks, want 0", len(got))
+		}
+	})
+
+	t.Run("unknown category", func(t *testing.T) {
+		got, err := s.TopStocks(ctx, 10, "no_such_category_"+baseSym, nil)
+		if err != nil {
+			t.Fatalf("unknown category: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("unknown category: got %d stocks, want 0", len(got))
+		}
+	})
+}
+
+// scoreByCategory returns the ScoreEntry for category, or nil if absent.
+func scoreByCategory(scores []ScoreEntry, category string) *ScoreEntry {
+	for i := range scores {
+		if scores[i].Category == category {
+			return &scores[i]
+		}
+	}
+	return nil
+}
+
+// equalStrings reports whether two string slices are equal in order and length.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
