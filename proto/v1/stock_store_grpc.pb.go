@@ -24,6 +24,7 @@ const (
 	StockStore_RemoveStock_FullMethodName = "/stockstore.v1.StockStore/RemoveStock"
 	StockStore_GetStock_FullMethodName    = "/stockstore.v1.StockStore/GetStock"
 	StockStore_GetStocks_FullMethodName   = "/stockstore.v1.StockStore/GetStocks"
+	StockStore_TopStocks_FullMethodName   = "/stockstore.v1.StockStore/TopStocks"
 )
 
 // StockStoreClient is the client API for StockStore service.
@@ -35,6 +36,7 @@ type StockStoreClient interface {
 	RemoveStock(ctx context.Context, in *RemoveStockRequest, opts ...grpc.CallOption) (*RemoveStockResponse, error)
 	GetStock(ctx context.Context, in *GetStockRequest, opts ...grpc.CallOption) (*Stock, error)
 	GetStocks(ctx context.Context, in *GetStocksRequest, opts ...grpc.CallOption) (*StockList, error)
+	TopStocks(ctx context.Context, in *TopStocksRequest, opts ...grpc.CallOption) (*StockList, error)
 }
 
 type stockStoreClient struct {
@@ -98,6 +100,16 @@ func (c *stockStoreClient) GetStocks(ctx context.Context, in *GetStocksRequest, 
 	return out, nil
 }
 
+func (c *stockStoreClient) TopStocks(ctx context.Context, in *TopStocksRequest, opts ...grpc.CallOption) (*StockList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StockList)
+	err := c.cc.Invoke(ctx, StockStore_TopStocks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // StockStoreServer is the server API for StockStore service.
 // All implementations must embed UnimplementedStockStoreServer
 // for forward compatibility.
@@ -107,6 +119,7 @@ type StockStoreServer interface {
 	RemoveStock(context.Context, *RemoveStockRequest) (*RemoveStockResponse, error)
 	GetStock(context.Context, *GetStockRequest) (*Stock, error)
 	GetStocks(context.Context, *GetStocksRequest) (*StockList, error)
+	TopStocks(context.Context, *TopStocksRequest) (*StockList, error)
 	mustEmbedUnimplementedStockStoreServer()
 }
 
@@ -131,6 +144,9 @@ func (UnimplementedStockStoreServer) GetStock(context.Context, *GetStockRequest)
 }
 func (UnimplementedStockStoreServer) GetStocks(context.Context, *GetStocksRequest) (*StockList, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStocks not implemented")
+}
+func (UnimplementedStockStoreServer) TopStocks(context.Context, *TopStocksRequest) (*StockList, error) {
+	return nil, status.Error(codes.Unimplemented, "method TopStocks not implemented")
 }
 func (UnimplementedStockStoreServer) mustEmbedUnimplementedStockStoreServer() {}
 func (UnimplementedStockStoreServer) testEmbeddedByValue()                    {}
@@ -232,6 +248,24 @@ func _StockStore_GetStocks_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _StockStore_TopStocks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TopStocksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StockStoreServer).TopStocks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StockStore_TopStocks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StockStoreServer).TopStocks(ctx, req.(*TopStocksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // StockStore_ServiceDesc is the grpc.ServiceDesc for StockStore service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -254,6 +288,10 @@ var StockStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStocks",
 			Handler:    _StockStore_GetStocks_Handler,
+		},
+		{
+			MethodName: "TopStocks",
+			Handler:    _StockStore_TopStocks_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

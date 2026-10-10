@@ -67,6 +67,7 @@ The service exposes a gRPC `StockStore` interface (package `stockstore.v1`) for 
 - **Dynamic score categories** — scores are keyed by an arbitrary category string, each normalized to `[-1.0, 1.0]`, each with a last-updated timestamp set by the server on write.
 - **Flexible retrieval** — filter by symbol, exchange, and per-category min/max score ranges.
 - **Random sampling** — when `limit` is less than the total matching count, a random subset is returned (`ORDER BY RANDOM()`).
+- **Top stocks** — fetch the N stocks with the highest score in a category, optionally scoped to an exchange, with deterministic ordering (value DESC, then symbol, then exchange).
 - **Stale-stock removal** — stocks older than `STOCK_TTL` (default 30 days) are deleted along with their scores; disabled when set to `0`.
 - **Optional Kafka ingestion** — consume PROTOBUF-encoded `StockUpdate` messages; a no-op unless both brokers and topic are configured.
 - **Zero-migration database** — tables are created automatically via `CREATE TABLE IF NOT EXISTS` on startup.
@@ -85,6 +86,7 @@ The service is `StockStore` in package `stockstore.v1`. Pre-generated Go binding
 | `RemoveStock` | `RemoveStockRequest → RemoveStockResponse` | unary | Remove a stock and its scores. |
 | `GetStock` | `GetStockRequest → Stock` | unary | By `symbol`, with an optional `exchange` filter. |
 | `GetStocks` | `GetStocksRequest → StockList` | unary | Random set filtered by `exchange` + min/max score ranges + `limit`. |
+| `TopStocks` | `TopStocksRequest → StockList` | unary | Top N stocks by score in a category; optional exchange filter. |
 
 > **Callout:** `GetStocks.limit` must be a positive value. When `limit` is unset or `0`, `GetStocks` returns an **empty** list. Always set a positive `limit`.
 
@@ -96,6 +98,7 @@ The service is `StockStore` in package `stockstore.v1`. Pre-generated Go binding
 | `RemoveStockRequest` | `string symbol`, `string exchange` |
 | `GetStockRequest` | `string symbol`, `optional string exchange` |
 | `GetStocksRequest` | `int32 limit`, `optional string exchange`, `map<string,double> min_scores`, `map<string,double> max_scores` |
+| `TopStocksRequest` | `int32 limit`, `string category`, `optional string exchange` |
 | `RemoveStockResponse` | `bool removed` |
 | `Stock` | `string symbol`, `string exchange`, `repeated ScoreEntry scores` |
 | `ScoreEntry` | `string category`, `double value`, `google.protobuf.Timestamp updated_at` |
@@ -116,12 +119,14 @@ service StockStore {
 	rpc RemoveStock(RemoveStockRequest) returns (RemoveStockResponse);
 	rpc GetStock(GetStockRequest) returns (Stock);
 	rpc GetStocks(GetStocksRequest) returns (StockList);
+	rpc TopStocks(TopStocksRequest) returns (StockList);
 }
 
 message UpdateStockRequest { string symbol = 1; string exchange = 2; map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message GetStockRequest { string symbol = 1; optional string exchange = 2; }
 message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
+message TopStocksRequest { int32 limit = 1; string category = 2; optional string exchange = 3; }
 message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; google.protobuf.Timestamp updated_at = 3; }
@@ -136,6 +141,12 @@ The following `grpcurl` call is **illustrative only** — substitute your own `:
 grpcurl -plaintext \
   -d '{ "limit": 10, "exchange": "NYSE", "min_scores": { "momentum": 0.5 } }' \
   localhost:3500 stockstore.v1.StockStore/GetStocks
+```
+
+Top `limit` stocks by score in a category (optionally scoped to one exchange):
+
+```bash
+grpcurl -plaintext -d '{ "limit": 10, "category": "sentiment", "exchange": "NYSE" }' localhost:3500 stockstore.v1.StockStore/TopStocks
 ```
 
 ## Kafka Ingestion
@@ -342,6 +353,8 @@ An index `idx_scores_category_value` is created on `scores(category, value DESC)
 
 > **Note:** `GetStocks` uses `ORDER BY RANDOM() LIMIT n` to select the random subset.
 
+> **Note:** TopStocks orders by score value DESC with a deterministic tiebreaker (symbol, then exchange); a limit <= 0 or an empty/unknown category returns an empty list.
+
 ## Development
 
 ### Build & test
@@ -381,6 +394,7 @@ AGENTS.md                      # agent-oriented notes
 - **Kafka is optional:** ingestion (**input**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set, and new-stock publishing (**output**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set — the two directions are independent.
 - **The real port is 3500, not 50051:** the gRPC server listens on `:3500`. The `EXPOSE 50051` line in the `Containerfile` is stale metadata — connect on **`:3500`**.
 - **`GetStocks` requires `limit > 0`:** an unset or `0` `limit` returns an empty list.
+- **TopStocks limit/category:** a non-positive limit or an empty/unknown category returns an empty list (not an error).
 - **Authoritative deployment variables** are the ones in the [Configuration](#configuration) section: `DATABASE_URL`, `STOCK_TTL`, and the `KAFKA_*` variables.
 
 ### Known inconsistencies to fix

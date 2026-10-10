@@ -254,6 +254,66 @@ func (x *GetStocksRequest) GetMaxScores() map[string]float64 {
 	return nil
 }
 
+type TopStocksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	Category      string                 `protobuf:"bytes,2,opt,name=category,proto3" json:"category,omitempty"`
+	Exchange      *string                `protobuf:"bytes,3,opt,name=exchange,proto3,oneof" json:"exchange,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TopStocksRequest) Reset() {
+	*x = TopStocksRequest{}
+	mi := &file_proto_v1_stock_store_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopStocksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopStocksRequest) ProtoMessage() {}
+
+func (x *TopStocksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_v1_stock_store_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopStocksRequest.ProtoReflect.Descriptor instead.
+func (*TopStocksRequest) Descriptor() ([]byte, []int) {
+	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TopStocksRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *TopStocksRequest) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *TopStocksRequest) GetExchange() string {
+	if x != nil && x.Exchange != nil {
+		return *x.Exchange
+	}
+	return ""
+}
+
 type RemoveStockResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Removed       bool                   `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"`
@@ -263,7 +323,7 @@ type RemoveStockResponse struct {
 
 func (x *RemoveStockResponse) Reset() {
 	*x = RemoveStockResponse{}
-	mi := &file_proto_v1_stock_store_proto_msgTypes[4]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -275,7 +335,7 @@ func (x *RemoveStockResponse) String() string {
 func (*RemoveStockResponse) ProtoMessage() {}
 
 func (x *RemoveStockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_v1_stock_store_proto_msgTypes[4]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -288,7 +348,7 @@ func (x *RemoveStockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveStockResponse.ProtoReflect.Descriptor instead.
 func (*RemoveStockResponse) Descriptor() ([]byte, []int) {
-	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{4}
+	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RemoveStockResponse) GetRemoved() bool {
@@ -309,7 +369,7 @@ type Stock struct {
 
 func (x *Stock) Reset() {
 	*x = Stock{}
-	mi := &file_proto_v1_stock_store_proto_msgTypes[5]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -321,7 +381,7 @@ func (x *Stock) String() string {
 func (*Stock) ProtoMessage() {}
 
 func (x *Stock) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_v1_stock_store_proto_msgTypes[5]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -334,7 +394,7 @@ func (x *Stock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Stock.ProtoReflect.Descriptor instead.
 func (*Stock) Descriptor() ([]byte, []int) {
-	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{5}
+	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Stock) GetSymbol() string {
@@ -369,7 +429,7 @@ type ScoreEntry struct {
 
 func (x *ScoreEntry) Reset() {
 	*x = ScoreEntry{}
-	mi := &file_proto_v1_stock_store_proto_msgTypes[6]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -381,7 +441,7 @@ func (x *ScoreEntry) String() string {
 func (*ScoreEntry) ProtoMessage() {}
 
 func (x *ScoreEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_v1_stock_store_proto_msgTypes[6]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -394,7 +454,7 @@ func (x *ScoreEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoreEntry.ProtoReflect.Descriptor instead.
 func (*ScoreEntry) Descriptor() ([]byte, []int) {
-	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{6}
+	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ScoreEntry) GetCategory() string {
@@ -427,7 +487,7 @@ type StockList struct {
 
 func (x *StockList) Reset() {
 	*x = StockList{}
-	mi := &file_proto_v1_stock_store_proto_msgTypes[7]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -439,7 +499,7 @@ func (x *StockList) String() string {
 func (*StockList) ProtoMessage() {}
 
 func (x *StockList) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_v1_stock_store_proto_msgTypes[7]
+	mi := &file_proto_v1_stock_store_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -452,7 +512,7 @@ func (x *StockList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StockList.ProtoReflect.Descriptor instead.
 func (*StockList) Descriptor() ([]byte, []int) {
-	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{7}
+	return file_proto_v1_stock_store_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *StockList) GetStocks() []*Stock {
@@ -494,6 +554,11 @@ const file_proto_v1_stock_store_proto_rawDesc = "" +
 	"\x0eMaxScoresEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01B\v\n" +
+	"\t_exchange\"r\n" +
+	"\x10TopStocksRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x1a\n" +
+	"\bcategory\x18\x02 \x01(\tR\bcategory\x12\x1f\n" +
+	"\bexchange\x18\x03 \x01(\tH\x00R\bexchange\x88\x01\x01B\v\n" +
 	"\t_exchange\"/\n" +
 	"\x13RemoveStockResponse\x12\x18\n" +
 	"\aremoved\x18\x01 \x01(\bR\aremoved\"n\n" +
@@ -508,14 +573,15 @@ const file_proto_v1_stock_store_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"9\n" +
 	"\tStockList\x12,\n" +
-	"\x06stocks\x18\x01 \x03(\v2\x14.stockstore.v1.StockR\x06stocks2\xfc\x02\n" +
+	"\x06stocks\x18\x01 \x03(\v2\x14.stockstore.v1.StockR\x06stocks2\xc4\x03\n" +
 	"\n" +
 	"StockStore\x12F\n" +
 	"\tAddStocks\x12!.stockstore.v1.UpdateStockRequest\x1a\x14.stockstore.v1.Stock(\x01\x12F\n" +
 	"\vUpdateStock\x12!.stockstore.v1.UpdateStockRequest\x1a\x14.stockstore.v1.Stock\x12T\n" +
 	"\vRemoveStock\x12!.stockstore.v1.RemoveStockRequest\x1a\".stockstore.v1.RemoveStockResponse\x12@\n" +
 	"\bGetStock\x12\x1e.stockstore.v1.GetStockRequest\x1a\x14.stockstore.v1.Stock\x12F\n" +
-	"\tGetStocks\x12\x1f.stockstore.v1.GetStocksRequest\x1a\x18.stockstore.v1.StockListB\x17Z\x15proto/v1;stockstorev1b\x06proto3"
+	"\tGetStocks\x12\x1f.stockstore.v1.GetStocksRequest\x1a\x18.stockstore.v1.StockList\x12F\n" +
+	"\tTopStocks\x12\x1f.stockstore.v1.TopStocksRequest\x1a\x18.stockstore.v1.StockListB\x17Z\x15proto/v1;stockstorev1b\x06proto3"
 
 var (
 	file_proto_v1_stock_store_proto_rawDescOnce sync.Once
@@ -529,40 +595,43 @@ func file_proto_v1_stock_store_proto_rawDescGZIP() []byte {
 	return file_proto_v1_stock_store_proto_rawDescData
 }
 
-var file_proto_v1_stock_store_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_proto_v1_stock_store_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_v1_stock_store_proto_goTypes = []any{
 	(*UpdateStockRequest)(nil),    // 0: stockstore.v1.UpdateStockRequest
 	(*RemoveStockRequest)(nil),    // 1: stockstore.v1.RemoveStockRequest
 	(*GetStockRequest)(nil),       // 2: stockstore.v1.GetStockRequest
 	(*GetStocksRequest)(nil),      // 3: stockstore.v1.GetStocksRequest
-	(*RemoveStockResponse)(nil),   // 4: stockstore.v1.RemoveStockResponse
-	(*Stock)(nil),                 // 5: stockstore.v1.Stock
-	(*ScoreEntry)(nil),            // 6: stockstore.v1.ScoreEntry
-	(*StockList)(nil),             // 7: stockstore.v1.StockList
-	nil,                           // 8: stockstore.v1.UpdateStockRequest.ScoresEntry
-	nil,                           // 9: stockstore.v1.GetStocksRequest.MinScoresEntry
-	nil,                           // 10: stockstore.v1.GetStocksRequest.MaxScoresEntry
-	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(*TopStocksRequest)(nil),      // 4: stockstore.v1.TopStocksRequest
+	(*RemoveStockResponse)(nil),   // 5: stockstore.v1.RemoveStockResponse
+	(*Stock)(nil),                 // 6: stockstore.v1.Stock
+	(*ScoreEntry)(nil),            // 7: stockstore.v1.ScoreEntry
+	(*StockList)(nil),             // 8: stockstore.v1.StockList
+	nil,                           // 9: stockstore.v1.UpdateStockRequest.ScoresEntry
+	nil,                           // 10: stockstore.v1.GetStocksRequest.MinScoresEntry
+	nil,                           // 11: stockstore.v1.GetStocksRequest.MaxScoresEntry
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
 }
 var file_proto_v1_stock_store_proto_depIdxs = []int32{
-	8,  // 0: stockstore.v1.UpdateStockRequest.scores:type_name -> stockstore.v1.UpdateStockRequest.ScoresEntry
-	9,  // 1: stockstore.v1.GetStocksRequest.min_scores:type_name -> stockstore.v1.GetStocksRequest.MinScoresEntry
-	10, // 2: stockstore.v1.GetStocksRequest.max_scores:type_name -> stockstore.v1.GetStocksRequest.MaxScoresEntry
-	6,  // 3: stockstore.v1.Stock.scores:type_name -> stockstore.v1.ScoreEntry
-	11, // 4: stockstore.v1.ScoreEntry.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 5: stockstore.v1.StockList.stocks:type_name -> stockstore.v1.Stock
+	9,  // 0: stockstore.v1.UpdateStockRequest.scores:type_name -> stockstore.v1.UpdateStockRequest.ScoresEntry
+	10, // 1: stockstore.v1.GetStocksRequest.min_scores:type_name -> stockstore.v1.GetStocksRequest.MinScoresEntry
+	11, // 2: stockstore.v1.GetStocksRequest.max_scores:type_name -> stockstore.v1.GetStocksRequest.MaxScoresEntry
+	7,  // 3: stockstore.v1.Stock.scores:type_name -> stockstore.v1.ScoreEntry
+	12, // 4: stockstore.v1.ScoreEntry.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 5: stockstore.v1.StockList.stocks:type_name -> stockstore.v1.Stock
 	0,  // 6: stockstore.v1.StockStore.AddStocks:input_type -> stockstore.v1.UpdateStockRequest
 	0,  // 7: stockstore.v1.StockStore.UpdateStock:input_type -> stockstore.v1.UpdateStockRequest
 	1,  // 8: stockstore.v1.StockStore.RemoveStock:input_type -> stockstore.v1.RemoveStockRequest
 	2,  // 9: stockstore.v1.StockStore.GetStock:input_type -> stockstore.v1.GetStockRequest
 	3,  // 10: stockstore.v1.StockStore.GetStocks:input_type -> stockstore.v1.GetStocksRequest
-	5,  // 11: stockstore.v1.StockStore.AddStocks:output_type -> stockstore.v1.Stock
-	5,  // 12: stockstore.v1.StockStore.UpdateStock:output_type -> stockstore.v1.Stock
-	4,  // 13: stockstore.v1.StockStore.RemoveStock:output_type -> stockstore.v1.RemoveStockResponse
-	5,  // 14: stockstore.v1.StockStore.GetStock:output_type -> stockstore.v1.Stock
-	7,  // 15: stockstore.v1.StockStore.GetStocks:output_type -> stockstore.v1.StockList
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
+	4,  // 11: stockstore.v1.StockStore.TopStocks:input_type -> stockstore.v1.TopStocksRequest
+	6,  // 12: stockstore.v1.StockStore.AddStocks:output_type -> stockstore.v1.Stock
+	6,  // 13: stockstore.v1.StockStore.UpdateStock:output_type -> stockstore.v1.Stock
+	5,  // 14: stockstore.v1.StockStore.RemoveStock:output_type -> stockstore.v1.RemoveStockResponse
+	6,  // 15: stockstore.v1.StockStore.GetStock:output_type -> stockstore.v1.Stock
+	8,  // 16: stockstore.v1.StockStore.GetStocks:output_type -> stockstore.v1.StockList
+	8,  // 17: stockstore.v1.StockStore.TopStocks:output_type -> stockstore.v1.StockList
+	12, // [12:18] is the sub-list for method output_type
+	6,  // [6:12] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -575,13 +644,14 @@ func file_proto_v1_stock_store_proto_init() {
 	}
 	file_proto_v1_stock_store_proto_msgTypes[2].OneofWrappers = []any{}
 	file_proto_v1_stock_store_proto_msgTypes[3].OneofWrappers = []any{}
+	file_proto_v1_stock_store_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_v1_stock_store_proto_rawDesc), len(file_proto_v1_stock_store_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

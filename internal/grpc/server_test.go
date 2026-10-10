@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,51 @@ func (f *fakeStore) GetStocks(_ context.Context, limit int32, exchange *string, 
 		}
 	}
 	if limit > 0 && int64(limit) < int64(len(out)) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeStore) TopStocks(_ context.Context, limit int32, category string, exchange *string) ([]store.Stock, error) {
+	if limit <= 0 || category == "" {
+		return []store.Stock{}, nil
+	}
+	type row struct {
+		symbol   string
+		exchange string
+		value    float64
+	}
+	var rows []row
+	for k, scores := range f.stocks {
+		ex, sym := splitKey(k)
+		if exchange != nil && ex != *exchange {
+			continue
+		}
+		v, ok := scores[category]
+		if !ok {
+			continue
+		}
+		rows = append(rows, row{symbol: sym, exchange: ex, value: v})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].value != rows[j].value {
+			return rows[i].value > rows[j].value
+		}
+		if rows[i].symbol != rows[j].symbol {
+			return rows[i].symbol < rows[j].symbol
+		}
+		return rows[i].exchange < rows[j].exchange
+	})
+	out := make([]store.Stock, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.Stock{
+			Symbol:   r.symbol,
+			Exchange: r.exchange,
+			Scores:   toDomainScores(f.stocks[key(r.symbol, r.exchange)]),
+			Updated:  time.Now(),
+		})
+	}
+	if int64(limit) < int64(len(out)) {
 		out = out[:limit]
 	}
 	return out, nil
@@ -275,6 +321,86 @@ func TestGetStocks_Filters(t *testing.T) {
 	if got := len(list.GetStocks()); got != 1 {
 		t.Fatalf("expected 1 stock with limit, got %d", got)
 	}
+}
+
+func TestTopStocks(t *testing.T) {
+	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		symbol    string
+		exc       string
+		sentiment float64
+	}{
+		{"AAA", "EX1", 0.9},
+		{"BBB", "EX1", 0.1},
+		{"CCC", "EX2", 0.95},
+	} {
+		if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
+			Symbol:   tc.symbol,
+			Exchange: tc.exc,
+			Scores:   map[string]float64{"sentiment": tc.sentiment},
+		}); err != nil {
+			t.Fatalf("UpdateStock %s: %v", tc.symbol, err)
+		}
+	}
+
+	t.Run("ordered by value desc", func(t *testing.T) {
+		list, err := client.TopStocks(ctx, &st.TopStocksRequest{Limit: 2, Category: "sentiment"})
+		if err != nil {
+			t.Fatalf("TopStocks: %v", err)
+		}
+		stocks := list.GetStocks()
+		if len(stocks) != 2 {
+			t.Fatalf("expected 2 stocks, got %d", len(stocks))
+		}
+		if stocks[0].GetSymbol() != "CCC" || stocks[0].GetExchange() != "EX2" {
+			t.Fatalf("first = %s/%s, want CCC/EX2", stocks[0].GetSymbol(), stocks[0].GetExchange())
+		}
+		if stocks[1].GetSymbol() != "AAA" || stocks[1].GetExchange() != "EX1" {
+			t.Fatalf("second = %s/%s, want AAA/EX1", stocks[1].GetSymbol(), stocks[1].GetExchange())
+		}
+	})
+
+	t.Run("filtered by exchange", func(t *testing.T) {
+		ex1 := "EX1"
+		list, err := client.TopStocks(ctx, &st.TopStocksRequest{Limit: 10, Category: "sentiment", Exchange: &ex1})
+		if err != nil {
+			t.Fatalf("TopStocks: %v", err)
+		}
+		stocks := list.GetStocks()
+		if len(stocks) != 2 {
+			t.Fatalf("expected 2 stocks, got %d", len(stocks))
+		}
+		for _, s := range stocks {
+			if s.GetExchange() != "EX1" {
+				t.Fatalf("stock %s/%s not on EX1", s.GetSymbol(), s.GetExchange())
+			}
+		}
+		if stocks[0].GetSymbol() != "AAA" {
+			t.Fatalf("first = %s, want AAA", stocks[0].GetSymbol())
+		}
+	})
+
+	t.Run("non-positive limit is empty", func(t *testing.T) {
+		list, err := client.TopStocks(ctx, &st.TopStocksRequest{Limit: 0, Category: "sentiment"})
+		if err != nil {
+			t.Fatalf("TopStocks: %v", err)
+		}
+		if list == nil || len(list.GetStocks()) != 0 {
+			t.Fatalf("expected non-nil empty list, got %v", list)
+		}
+	})
+
+	t.Run("unknown category is empty", func(t *testing.T) {
+		list, err := client.TopStocks(ctx, &st.TopStocksRequest{Limit: 10, Category: "nope"})
+		if err != nil {
+			t.Fatalf("TopStocks: %v", err)
+		}
+		if list == nil || len(list.GetStocks()) != 0 {
+			t.Fatalf("expected non-nil empty list, got %v", list)
+		}
+	})
 }
 
 func TestAddStocks(t *testing.T) {

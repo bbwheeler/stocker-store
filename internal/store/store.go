@@ -270,6 +270,55 @@ func (s *Store) GetStocks(ctx context.Context, limit int32, exchange *string, mi
 	return all, nil
 }
 
+// TopStocks retrieves the top `limit` stocks by score value in the given
+// category, optionally scoped to an exchange. Ordering is deterministic:
+// value DESC, then symbol ASC, then exchange ASC. A non-positive limit or an
+// empty category returns an empty list (no error).
+func (s *Store) TopStocks(ctx context.Context, limit int32, category string, exchange *string) ([]Stock, error) {
+	if limit <= 0 || category == "" {
+		return []Stock{}, nil
+	}
+
+	query := "SELECT symbol, exchange FROM scores WHERE category = $1"
+	args := []interface{}{category}
+	argIdx := 2
+	if exchange != nil {
+		query += fmt.Sprintf(" AND exchange = $%d", argIdx)
+		args = append(args, *exchange)
+		argIdx++
+	}
+	query += fmt.Sprintf(" ORDER BY value DESC, symbol ASC, exchange ASC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("top stocks: %w", err)
+	}
+	defer rows.Close()
+
+	all := []Stock{}
+	for rows.Next() {
+		var stock Stock
+		if err := rows.Scan(&stock.Symbol, &stock.Exchange); err != nil {
+			return nil, fmt.Errorf("scan top stock row: %w", err)
+		}
+		all = append(all, stock)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate top stock rows: %w", err)
+	}
+
+	for i := range all {
+		scores, err := s.getStockScores(ctx, all[i].Symbol, all[i].Exchange)
+		if err != nil {
+			return nil, fmt.Errorf("get scores for %s: %w", all[i].Symbol, err)
+		}
+		all[i].Scores = scores
+	}
+
+	return all, nil
+}
+
 func (s *Store) getStockScores(ctx context.Context, symbol, exchange string) ([]ScoreEntry, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT category, value, timestamp FROM scores WHERE symbol = $1 AND exchange = $2 ORDER BY category

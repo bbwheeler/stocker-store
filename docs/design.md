@@ -335,3 +335,38 @@ Serialized with `proto.Marshal` (no JSON, no compression). Consumers decode with
 - No re-emission for *same* `(symbol, exchange)` across refreshes — only on the first INSERT.
 - No backward compatibility for the `KAFKA_TOPIC` → `KAFKA_INPUT_TOPIC` rename.
 - No change to the `KAFKA_GROUP_ID` or `KAFKA_BROKERS` semantics.
+
+## 13. Top Stocks
+
+`TopStocks(TopStocksRequest) returns (StockList)` returns the `limit` stocks with the highest score `value` in a given `category`, optionally scoped to a single `exchange`.
+
+### 13.1 Request shape
+
+```protobuf
+message TopStocksRequest { int32 limit = 1; string category = 2; optional string exchange = 3; }
+```
+
+When `exchange` is omitted, all exchanges are considered; when set, only that exchange is queried.
+
+### 13.2 Query
+
+```sql
+SELECT symbol, exchange FROM scores
+WHERE category = $1 [AND exchange = $2]
+ORDER BY value DESC, symbol ASC, exchange ASC
+LIMIT $n
+```
+
+Ordering is deterministic: score `value` descending, then `symbol` ascending, then `exchange` ascending. This is the tiebreaker rule — results are stable across identical requests. Each returned stock has its scores hydrated via the existing per-stock score lookup.
+
+### 13.3 Short-circuits
+
+- `limit <= 0` → empty list (no query).
+- empty `category` → empty list (no query).
+- unknown (non-empty) category → empty list (the query returns no rows).
+
+None of these cases is an error — the RPC returns an empty `StockList`.
+
+### 13.4 Index
+
+The existing index `idx_scores_category_value (category, value DESC)` covers the primary ordering; no new index is required.

@@ -26,6 +26,7 @@ type Store interface {
 	RemoveStock(ctx context.Context, symbol, exchange string) (bool, error)
 	GetStock(ctx context.Context, symbol string, exchange *string) (*store.Stock, error)
 	GetStocks(ctx context.Context, limit int32, exchange *string, minScores, maxScores map[string]float64) ([]store.Stock, error)
+	TopStocks(ctx context.Context, limit int32, category string, exchange *string) ([]store.Stock, error)
 }
 
 // Server holds the dependencies for the gRPC service.
@@ -132,6 +133,22 @@ func (s *Server) GetStocks(ctx context.Context, req *st.GetStocksRequest) (*st.S
 		return nil, status.Errorf(codes.Internal, "get stocks: %v", err)
 	}
 
+	list := &st.StockList{Stocks: make([]*st.Stock, 0, len(stocks))}
+	for i := range stocks {
+		list.Stocks = append(list.Stocks, toProtoStock(&stocks[i]))
+	}
+	return list, nil
+}
+
+// TopStocks retrieves the top stocks by score value in a given category,
+// optionally filtered by exchange. Ordering is deterministic (value DESC,
+// then symbol, then exchange). A non-positive limit or an empty/unknown
+// category yields an empty list, not an error.
+func (s *Server) TopStocks(ctx context.Context, req *st.TopStocksRequest) (*st.StockList, error) {
+	stocks, err := s.store.TopStocks(ctx, req.GetLimit(), req.GetCategory(), req.Exchange)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "top stocks: %v", err)
+	}
 	list := &st.StockList{Stocks: make([]*st.Stock, 0, len(stocks))}
 	for i := range stocks {
 		list.Stocks = append(list.Stocks, toProtoStock(&stocks[i]))
