@@ -5,20 +5,20 @@ A simple, self-hostable Go gRPC service for storing stocks and their normalized 
 **Tech:** Go 1.25 · gRPC/protobuf · PostgreSQL (pgx v5) · Kafka (segmentio/kafka-go) · Podman Quadlets
 
 ```
-┌──────────┐   gRPC :3500       ┌──────────────────────────────┐
-│ client / │ ────▶              │ stocker-store                │
-│ scoring  │ ◀────              │ StockStore service           │
-│ services │                    │ upsert / remove / retrieve   │
-└──────────┘                    │ retention loop (STOCK_TTL)   │
-                                │ kafka subscriber (optional)  │
-┌──────────┐   protobuf         │                              │
-│ kafka    │ ────▶              │                              │
-│ brokers  │   topic            └──────────────────────────────┘
-└──────────┘                                      ▼
-                                         ┌──────────────────┐
-                                         │ PostgreSQL       │
-                                         │ stocks / scores  │
-                                         └──────────────────┘
+┌──────────┐   gRPC :3500 (GRPC_PORT) ┌──────────────────────────────┐
+│ client / │ ────▶                    │ stocker-store                │
+│ scoring  │ ◀────                    │ StockStore service           │
+│ services │                          │ upsert / remove / retrieve   │
+└──────────┘                          │ retention loop (STOCK_TTL)   │
+                                      │ kafka subscriber (optional)  │
+┌──────────┐   protobuf               │                              │
+│ kafka    │ ────▶                    │                              │
+│ brokers  │   topic                  └──────────────────────────────┘
+└──────────┘                                            ▼
+                                               ┌──────────────────┐
+                                               │ PostgreSQL       │
+                                               │ stocks / scores  │
+                                               └──────────────────┘
 ```
 
 Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** score categories, each score normalized to `[-1.0, 1.0]` and carrying a per-score last-updated timestamp (set by the server on write). You can retrieve stocks by symbol, by exchange, or by min/max score ranges; when a request's `limit` is smaller than the number of matching stocks, a random subset is returned. Stocks and scores are upserted, and stale stocks are automatically removed after a configurable retention window (default 30 days). Ingestion happens over gRPC and, optionally, Kafka — the service is fully functional as pure gRPC with only a `DATABASE_URL`.
@@ -135,7 +135,7 @@ message StockList { repeated Stock stocks = 1; }
 
 ### Example
 
-The following `grpcurl` call is **illustrative only** — substitute your own `:3500` target and fields:
+The following `grpcurl` call is **illustrative only** — substitute your own target and fields. `localhost:3500` is the default port; set `GRPC_PORT` to change it:
 
 ```bash
 grpcurl -plaintext \
@@ -214,6 +214,7 @@ Configuration is entirely via environment variables. The **single most important
 | Variable | Required | Default | Format | Purpose |
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes (in practice) | `postgres://localhost:5432/stocker?sslmode=disable` | PostgreSQL DSN: `scheme://user:pass@host:port/db?sslmode=...` | The single Postgres connection string. Set this to point at your database. |
+| `GRPC_PORT` | No | `3500` | Decimal TCP port, `1`–`65535` | Port the gRPC server binds to (`:PORT`). Invalid values abort startup. |
 | `STOCK_TTL` | No | `720h` (30 days) | Go duration string, e.g. `48h`, `720h`; `0` (or any non-positive value) **disables** expiry | Retention window for stale-stock auto-removal. Cleanup runs once at startup, then hourly. |
 | `KAFKA_BROKERS` | No (Kafka only) | — | Comma-separated `host:port` list, e.g. `broker1:9092,broker2:9092` | Kafka brokers, used for **both** consuming stock events (input) and publishing new-stock `Stock` messages (output). |
 | `KAFKA_INPUT_TOPIC` | No (Kafka only) | — | Topic name (e.g. `stockers`) | The topic to **consume** stock events from. |
@@ -233,6 +234,9 @@ This is the environment file a deployment reads (the Quadlet example loads `~/.c
 ```bash
 # Required — the single Postgres connection string.
 DATABASE_URL=postgres://user:PASSWORD@localhost:5432/stocker?sslmode=disable
+
+# Optional — gRPC listen port (default 3500).
+# GRPC_PORT=3500
 
 # Optional — stock retention as a Go duration (default 720h / 30 days); "0" disables.
 # STOCK_TTL=720h
@@ -283,7 +287,7 @@ The `Containerfile` is multi-stage:
 
 Pre-generated proto code is already in-tree, so the build has no external codegen dependency at run time.
 
-> **Note:** the `Containerfile` contains `EXPOSE 50051`, which is **stale, misleading metadata**. The actual gRPC server binds **`:3500`** (see `cmd/main.go`). Connect on **port 3500**.
+> **Port:** the `Containerfile` declares `EXPOSE 3500`, matching the default `GRPC_PORT`. `EXPOSE` is static image metadata and does not follow `GRPC_PORT`. With `--network=host` (below) no port publishing is needed; on a bridge network publish the port with `-p 3500:3500` — or `-p $GRPC_PORT:$GRPC_PORT` when overridden, passing `GRPC_PORT` into the container (`-e`) as well.
 
 Run with the required environment variables:
 
@@ -299,9 +303,9 @@ podman run --rm \
 Quadlet units live in `deploy/quadlet/`:
 
 - `stocker-store.build` — `File=%h/stocker-store/Containerfile`, `ImageTag=stocker-store:latest`.
-- `stocker-store.container` — `Image=containers.wheeli.ca/stocker-store:latest`, `Network=host`, `EnvironmentFile=%h/.config/stocker-store/.env.podman`, `Restart=always`, `RestartSec=5`.
+- `stocker-store.container` — `Image=containers.wheeli.ca/stocker-store:latest`, `EnvironmentFile=%h/.config/stocker-store/.env.podman`, `Restart=always`, `RestartSec=5`.
 
-Because the container type uses `Network=host`, the gRPC service is reachable on the host's **`:3500`**.
+The shipped unit uses the default bridge network and publishes no ports, so the gRPC port is not reachable from the host as-is. Either add `Network=host` to it (the service then listens on the host's **`GRPC_PORT`**, default `3500`, and that port must be free on the host), or publish the port with `PublishPort` (e.g. `PublishPort=3500:3500`, keeping the container side equal to `GRPC_PORT` from `.env.podman`).
 
 > **The operator must create** `~/.config/stocker-store/.env.podman` — it is **not** shipped in the repo. Populate it with `DATABASE_URL` and the optional `STOCK_TTL` / `KAFKA_*` values (see the [sample `.env.podman`](#sample-envpodman)).
 
@@ -309,10 +313,10 @@ To use the Quadlets, place the unit files (for example in `/etc/systemd/user` or
 
 ### Quickstart (Quadlets, end-to-end)
 
-1. **Write the env file:** create `~/.config/stocker-store/.env.podman` — at minimum `DATABASE_URL` (see the [sample](#sample-envpodman)).
+1. **Write the env file:** create `~/.config/stocker-store/.env.podman` — at minimum `DATABASE_URL`; optionally set `GRPC_PORT` (default `3500`) (see the [sample](#sample-envpodman)).
 2. **Build the image:** `podman build -t stocker-store .`
 3. **Enable & start:** `systemctl enable --now stocker-store`
-4. **Verify:** `podman logs stocker-store` and/or `systemctl status stocker-store`
+4. **Verify:** `podman logs stocker-store` and/or `systemctl status stocker-store` — the startup line `stocker-store listening on :<port>` reports the port actually bound.
 
 ### Push to registry
 
@@ -369,10 +373,13 @@ make clean    # remove bin/
 
 Pre-generated proto bindings are committed under `proto/v1` and `proto/v1/kafka`, so you do not need codegen tooling to build.
 
+`go test ./...` (what `make test` runs) includes the `GRPC_PORT` parser tests in `cmd/main_test.go` — default, override, whitespace, and invalid values; `go test ./cmd` runs just those.
+
 ### Repository layout
 
 ```text
-cmd/main.go                    # entrypoint: env config, gRPC server, retention loop, kafka subscriber
+cmd/main.go                    # entrypoint: env config (incl. GRPC_PORT), gRPC server, retention loop, kafka subscriber
+cmd/main_test.go               # GRPC_PORT parser tests
 internal/grpc/                 # gRPC server (StockStore handlers) + tests
 internal/kafka/                # Kafka consumer (StockUpdate ingestion) + tests
 internal/store/                # PostgreSQL (pgx pool), models, table init, + tests
@@ -382,7 +389,7 @@ deploy/quadlet/                # Quadlet unit files (stocker-store.build / stock
 deploy/push.sh                 # build + push image to registry
 deploy/install.sh              # legacy install script
 docs/design/                   # design docs (kafka-proto.md, score-entry-timestamp.md)
-Containerfile                  # multi-stage build (note the stale EXPOSE 50051)
+Containerfile                  # multi-stage build (EXPOSE 3500)
 Makefile                       # build / run / test / clean
 design.md                      # historical design doc (partially stale)
 AGENTS.md                      # agent-oriented notes
@@ -392,16 +399,15 @@ AGENTS.md                      # agent-oriented notes
 
 - **Minimal configuration:** only `DATABASE_URL` is required. `STOCK_TTL` and the `KAFKA_*` variables are optional.
 - **Kafka is optional:** ingestion (**input**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set, and new-stock publishing (**output**) is a no-op unless **both** `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set — the two directions are independent.
-- **The real port is 3500, not 50051:** the gRPC server listens on `:3500`. The `EXPOSE 50051` line in the `Containerfile` is stale metadata — connect on **`:3500`**.
+- **Port:** the gRPC server listens on `GRPC_PORT` (default `3500`), logged at startup as `stocker-store listening on :<port>`. `EXPOSE 3500` in the `Containerfile` reflects only that default.
 - **`GetStocks` requires `limit > 0`:** an unset or `0` `limit` returns an empty list.
 - **TopStocks limit/category:** a non-positive limit or an empty/unknown category returns an empty list (not an error).
-- **Authoritative deployment variables** are the ones in the [Configuration](#configuration) section: `DATABASE_URL`, `STOCK_TTL`, and the `KAFKA_*` variables.
+- **Authoritative deployment variables** are the ones in the [Configuration](#configuration) section: `DATABASE_URL`, `GRPC_PORT`, `STOCK_TTL`, and the `KAFKA_*` variables.
 
 ### Known inconsistencies to fix
 
 These are known issues in the deployment scripts and metadata; none of them is asserted as the canonical source of truth:
 
-- **Port:** `EXPOSE 50051` in the `Containerfile` vs. the real `:3500` binding in `cmd/main.go`.
 - **Image name:** `deploy/push.sh` pushes `stocker-list:latest` vs. the Quadlet's `stocker-store:latest`.
 - **`deploy/install.sh`:** references legacy variables `DB_USER` / `DB_PASSWORD`, the legacy service name `tsx-tracker`, and some missing/renamed files. It is legacy and should not be relied upon.
 

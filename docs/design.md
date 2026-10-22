@@ -298,6 +298,7 @@ Wiring in `cmd/main.go`:
 
 | Variable            | Required | Default          | Format                                              | Purpose                                                            |
 |---------------------|----------|------------------|-----------------------------------------------------|--------------------------------------------------------------------|
+| `GRPC_PORT`         | No       | `3500`           | Decimal TCP port, `1`–`65535`                       | Port the gRPC server listens on. Invalid values abort startup (new). |
 | `DATABASE_URL`      | Yes      | `postgres://…`   | PostgreSQL DSN                                      | The single Postgres connection string (unchanged).                 |
 | `STOCK_TTL`         | No       | `720h`           | Go duration string; `0` disables                    | Retention window for stale-stock auto-removal (unchanged).         |
 | `KAFKA_BROKERS`     | No       | —                | Comma-separated `host:port` list                    | Shared between the input consumer and the output producer.         |
@@ -308,6 +309,7 @@ Wiring in `cmd/main.go`:
 - Kafka **input** is a **no-op** unless **both** `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set.
 - Kafka **output** is a **no-op** unless **both** `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set.
 - Input and output are **independent** — enable either, both, or neither.
+- `GRPC_PORT` is validated before the listener is created; an unset or empty value means `3500`. An unparseable or out-of-range value is fatal at startup rather than silently defaulted.
 
 ### 12.7 Message format
 

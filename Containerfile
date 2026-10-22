@@ -22,5 +22,5 @@ RUN CGO_ENABLED=0 go build -o /out/stocker-store ./cmd/main.go
 # Runtime stage
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/stocker-store /stocker-store
-EXPOSE 50051
+EXPOSE 3500
 ENTRYPOINT ["/stocker-store"]
