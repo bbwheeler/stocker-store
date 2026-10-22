@@ -287,7 +287,7 @@ The `Containerfile` is multi-stage:
 
 Pre-generated proto code is already in-tree, so the build has no external codegen dependency at run time.
 
-> **Port:** the `Containerfile` declares `EXPOSE 3500`, matching the default `GRPC_PORT`. `EXPOSE` is static image metadata and does not follow `GRPC_PORT`. With `--network=host` (below) no port publishing is needed; on a bridge network publish the port with `-p 3500:3500`, or `-p $GRPC_PORT:$GRPC_PORT` when overridden.
+> **Port:** the `Containerfile` declares `EXPOSE 3500`, matching the default `GRPC_PORT`. `EXPOSE` is static image metadata and does not follow `GRPC_PORT`. With `--network=host` (below) no port publishing is needed; on a bridge network publish the port with `-p 3500:3500` — or `-p $GRPC_PORT:$GRPC_PORT` when overridden, passing `GRPC_PORT` into the container (`-e`) as well.
 
 Run with the required environment variables:
 
@@ -303,9 +303,9 @@ podman run --rm \
 Quadlet units live in `deploy/quadlet/`:
 
 - `stocker-store.build` — `File=%h/stocker-store/Containerfile`, `ImageTag=stocker-store:latest`.
-- `stocker-store.container` — `Image=containers.wheeli.ca/stocker-store:latest`, `Network=host`, `EnvironmentFile=%h/.config/stocker-store/.env.podman`, `Restart=always`, `RestartSec=5`.
+- `stocker-store.container` — `Image=containers.wheeli.ca/stocker-store:latest`, `EnvironmentFile=%h/.config/stocker-store/.env.podman`, `Restart=always`, `RestartSec=5`.
 
-Because the container type uses `Network=host`, the gRPC service is reachable on the host's **`GRPC_PORT`** (default `3500`), so that port must be free on the host. Setting `GRPC_PORT` in `.env.podman` moves it.
+The shipped unit uses the default bridge network and publishes no ports, so the gRPC port is not reachable from the host as-is. Either add `Network=host` to it (the service then listens on the host's **`GRPC_PORT`**, default `3500`, and that port must be free on the host), or publish the port with `PublishPort` (e.g. `PublishPort=3500:3500`, keeping the container side equal to `GRPC_PORT` from `.env.podman`).
 
 > **The operator must create** `~/.config/stocker-store/.env.podman` — it is **not** shipped in the repo. Populate it with `DATABASE_URL` and the optional `STOCK_TTL` / `KAFKA_*` values (see the [sample `.env.podman`](#sample-envpodman)).
 
