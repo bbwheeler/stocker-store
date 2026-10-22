@@ -24,6 +24,13 @@ type stockStore interface {
 }
 
 func main() {
+	rawPort := os.Getenv("GRPC_PORT")
+	port, err := parsePort(rawPort)
+	if err != nil {
+		log.Fatalf("invalid GRPC_PORT %q: %v", rawPort, err)
+	}
+	addr := fmt.Sprintf(":%d", port)
+
 	dbUrl := os.Getenv("DATABASE_URL")
 	if dbUrl == "" {
 		log.Fatal("DATABASE_URL required")
@@ -55,9 +62,9 @@ func main() {
 
 	server := grpc.NewServer(st, publisher)
 
-	lis, err := net.Listen("tcp", ":3500")
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("listen on port 3500: %v", err)
+		log.Fatalf("listen on %s: %v", addr, err)
 	}
 
 	gRPCServer := server.GRPCServer()
@@ -70,7 +77,7 @@ func main() {
 
 	go runRetention(ctx, st)
 
-	log.Println("stocker-store listening on :3500")
+	log.Printf("stocker-store listening on %s", addr)
 
 	if err := runKafkaSubscriber(ctx, st, publisher); err != nil {
 		log.Printf("kafka subscriber: %v", err)
