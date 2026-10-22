@@ -22,14 +22,17 @@ func TestParsePort(t *testing.T) {
 		{name: "whitespace trimmed", raw: "  8080  ", want: 8080},
 		{name: "lower bound", raw: "1", want: 1},
 		{name: "upper bound", raw: "65535", want: 65535},
+		{name: "leading plus", raw: "+3500", want: 3500},
 		{name: "trailing space", raw: "3500 ", want: 3500},
 		{name: "surrounding tab and newline", raw: "\t3500\n", want: 3500},
+		{name: "whitespace only means default", raw: "   ", want: wantDefault},
 		{name: "non-numeric", raw: "abc", wantErr: true},
 		{name: "zero", raw: "0", wantErr: true},
 		{name: "above upper bound", raw: "65536", wantErr: true},
 		{name: "negative", raw: "-1", wantErr: true},
 		{name: "not an integer", raw: "3.5", wantErr: true},
 		{name: "hexadecimal", raw: "0x10", wantErr: true},
+		{name: "integer overflow", raw: "99999999999999999999", wantErr: true},
 	}
 
 	for _, tt := range tests {
