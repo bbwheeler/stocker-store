@@ -6,9 +6,10 @@ import (
 )
 
 func TestParsePort(t *testing.T) {
-	// defaultGRPCPort is introduced with parsePort; until then the documented
-	// default is asserted as a literal.
 	const wantDefault = 3500
+	if defaultGRPCPort != wantDefault {
+		t.Fatalf("defaultGRPCPort = %d, want %d", defaultGRPCPort, wantDefault)
+	}
 
 	tests := []struct {
 		name    string
