@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -160,4 +161,22 @@ func envList(name string) []string {
 		return nil
 	}
 	return strings.Split(raw, ",")
+}
+
+// defaultGRPCPort is the listen port used when GRPC_PORT is unset or empty.
+const defaultGRPCPort = 3500
+
+// parsePort validates a decimal TCP port. An empty or whitespace-only value
+// yields defaultGRPCPort; anything outside 1..65535 is an error.
+func parsePort(raw string) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultGRPCPort, nil
+	}
+
+	port, err := strconv.Atoi(trimmed)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %q: must be an integer between 1 and 65535", raw)
+	}
+	return port, nil
 }
