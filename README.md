@@ -63,7 +63,7 @@ The service exposes a gRPC `StockStore` interface (package `stockstore.v1`) for 
 
 ## Features
 
-- **Bulk and single upserts** — send one stock or a stream of stocks; both upsert the stock and its scores atomically.
+- **Bulk and single upserts** — send one stock or a stream of stocks; both upsert the stock and its scores atomically. Upserts **merge** scores: only the categories present in the request are written, and categories not mentioned are left unchanged, including their last-updated timestamps.
 - **Dynamic score categories** — scores are keyed by an arbitrary category string, each normalized to `[-1.0, 1.0]`, each with a last-updated timestamp set by the server on write.
 - **Flexible retrieval** — filter by symbol, exchange, and per-category min/max score ranges.
 - **Random sampling** — when `limit` is less than the total matching count, a random subset is returned (`ORDER BY RANDOM()`).
@@ -89,6 +89,17 @@ The service is `StockStore` in package `stockstore.v1`. Pre-generated Go binding
 | `TopStocks` | `TopStocksRequest → StockList` | unary | Top N stocks by score in a category; optional exchange filter. |
 
 > **Callout:** `GetStocks.limit` must be a positive value. When `limit` is unset or `0`, `GetStocks` returns an **empty** list. Always set a positive `limit`.
+
+#### Partial score updates
+
+`AddStocks` and `UpdateStock` treat `scores` as a **merge**, not a replacement:
+
+- A category present in the request is inserted or updated, and gets a fresh server timestamp.
+- A category absent from the request is left untouched — same value, same `updated_at`.
+- An empty or omitted `scores` map updates only the stock-level timestamp.
+- Scores are removed only by `RemoveStock` or by retention (`STOCK_TTL`); an upsert never removes a score.
+
+Kafka ingestion follows the same rule: a `StockUpdate` message merges its scores into the stored set.
 
 ### Messages
 
