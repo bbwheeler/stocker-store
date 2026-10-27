@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"sort"
 	"strings"
@@ -22,8 +23,9 @@ import (
 
 // fakeStore is an in-memory implementation of the Store interface.
 type fakeStore struct {
-	stocks map[string]map[string]float64 // "exchange/symbol" -> scores
-	getErr error
+	stocks     map[string]map[string]float64 // "exchange/symbol" -> scores
+	lastScores map[string]float64            // copy of the scores passed to the last UpdateStock
+	getErr     error
 }
 
 func newFakeStore() *fakeStore {
@@ -43,6 +45,7 @@ func splitKey(k string) (exchange, symbol string) {
 func (f *fakeStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
 	k := key(symbol, exchange)
 	_, seen := f.stocks[k]
+	f.lastScores = maps.Clone(scores)
 	f.stocks[k] = scores
 	return &store.Stock{Symbol: symbol, Exchange: exchange, Scores: toDomainScores(scores), Updated: time.Now()}, !seen, nil
 }
@@ -443,6 +446,139 @@ func TestAddStocks_EmptyStream(t *testing.T) {
 	if _, err := stream.CloseAndRecv(); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument for empty stream, got %v", err)
 	}
+}
+
+// ---- score pass-through tests ----
+
+// TestUpdateStock_PassesOnlyRequestScores verifies that each UpdateStock call
+// forwards exactly its own scores map to the store: categories from an earlier
+// call are neither unioned in nor cleared out by the handler.
+func TestUpdateStock_PassesOnlyRequestScores(t *testing.T) {
+	fs := newFakeStore()
+	client := newTestClient(t, fs, kafka.Noop{})
+	ctx := context.Background()
+
+	firstScores := map[string]float64{"momentum": 0.5, "sentiment": 0.9}
+	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
+		Symbol:   "PST",
+		Exchange: "EXY",
+		Scores:   firstScores,
+	}); err != nil {
+		t.Fatalf("first UpdateStock: %v", err)
+	}
+
+	secondScores := map[string]float64{"momentum": -0.4}
+	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
+		Symbol:   "PST",
+		Exchange: "EXY",
+		Scores:   secondScores,
+	}); err != nil {
+		t.Fatalf("second UpdateStock: %v", err)
+	}
+
+	if got := len(fs.lastScores); got != 1 {
+		t.Fatalf("lastScores count = %d, want 1 (no unioning): %v", got, fs.lastScores)
+	}
+	if got := fs.lastScores["momentum"]; got != -0.4 {
+		t.Errorf("lastScores[momentum] = %v, want -0.4", got)
+	}
+	if _, ok := fs.lastScores["sentiment"]; ok {
+		t.Errorf("lastScores contains sentiment = %v, want it absent (no unioning): %v",
+			fs.lastScores["sentiment"], fs.lastScores)
+	}
+
+	// The handler must not mutate the caller's maps.
+	if got := len(firstScores); got != 2 {
+		t.Errorf("first request scores count = %d, want 2 (request mutated)", got)
+	}
+	if got := firstScores["sentiment"]; got != 0.9 {
+		t.Errorf("first request scores[sentiment] = %v, want 0.9 (request mutated)", got)
+	}
+	if got := len(secondScores); got != 1 {
+		t.Errorf("second request scores count = %d, want 1 (request mutated)", got)
+	}
+}
+
+// TestUpdateStock_PassesNilScores verifies that an UpdateStock request without a
+// scores map reaches the store as a nil map, not an empty non-nil one.
+func TestUpdateStock_PassesNilScores(t *testing.T) {
+	fs := newFakeStore()
+	client := newTestClient(t, fs, kafka.Noop{})
+
+	if _, err := client.UpdateStock(context.Background(), &st.UpdateStockRequest{
+		Symbol:   "PST",
+		Exchange: "EXY",
+	}); err != nil {
+		t.Fatalf("UpdateStock: %v", err)
+	}
+	if fs.lastScores != nil {
+		t.Fatalf("lastScores = %v, want nil", fs.lastScores)
+	}
+}
+
+// TestAddStocks_PassesPerMessageScores verifies that AddStocks forwards each
+// stream message's scores independently: a later message's categories neither
+// accumulate onto nor clear an earlier message's categories.
+func TestAddStocks_PassesPerMessageScores(t *testing.T) {
+	fs := newFakeStore()
+	client := newTestClient(t, fs, kafka.Noop{})
+	ctx := context.Background()
+
+	stream, err := client.AddStocks(ctx)
+	if err != nil {
+		t.Fatalf("AddStocks: %v", err)
+	}
+	requests := []*st.UpdateStockRequest{
+		{Symbol: "PST1", Exchange: "EXY", Scores: map[string]float64{"alpha": 0.1}},
+		{Symbol: "PST1", Exchange: "EXY", Scores: map[string]float64{"beta": -0.2}},
+		{Symbol: "PST2", Exchange: "EXY"},
+	}
+	for _, req := range requests {
+		if err := stream.Send(req); err != nil {
+			t.Fatalf("Send %s: %v", req.GetSymbol(), err)
+		}
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		t.Fatalf("CloseAndRecv: %v", err)
+	}
+
+	exch := "EXY"
+	first, err := client.GetStock(ctx, &st.GetStockRequest{Symbol: "PST1", Exchange: &exch})
+	if err != nil {
+		t.Fatalf("GetStock PST1: %v", err)
+	}
+	scores := first.GetScores()
+	if len(scores) != 1 {
+		t.Fatalf("PST1 scores count = %d, want 1 (per-message pass-through): %v", len(scores), scores)
+	}
+	if v, ok := scoreLookup(scores, "beta"); !ok || v != -0.2 {
+		t.Errorf("PST1 scores[beta] = %v (present=%v), want -0.2", v, ok)
+	}
+	if _, ok := scoreLookup(scores, "alpha"); ok {
+		t.Errorf("PST1 scores contains alpha, want it absent (no accumulation): %v", scores)
+	}
+
+	second, err := client.GetStock(ctx, &st.GetStockRequest{Symbol: "PST2", Exchange: &exch})
+	if err != nil {
+		t.Fatalf("GetStock PST2: %v", err)
+	}
+	if got := len(second.GetScores()); got != 0 {
+		t.Fatalf("PST2 scores count = %d, want 0: %v", got, second.GetScores())
+	}
+	if fs.lastScores != nil {
+		t.Fatalf("lastScores = %v, want nil after the scoreless message", fs.lastScores)
+	}
+}
+
+// scoreLookup returns the value and presence of a category in a proto score
+// slice. proto map/slice ordering is unspecified, so lookups are key-based.
+func scoreLookup(entries []*st.ScoreEntry, category string) (float64, bool) {
+	for _, e := range entries {
+		if e.GetCategory() == category {
+			return e.GetValue(), true
+		}
+	}
+	return 0, false
 }
 
 // ---- publisher tests ----

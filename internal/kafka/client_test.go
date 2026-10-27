@@ -324,6 +324,58 @@ func TestHandle_HappyPath(t *testing.T) {
 	}
 }
 
+// TestHandle_PassesOnlyMessageScores verifies that handle forwards exactly the
+// categories present in the message to the store, synthesizing none.
+func TestHandle_PassesOnlyMessageScores(t *testing.T) {
+	store := &fakeStore{}
+	c := New(Config{}, store, &fakePublisher{})
+	raw, err := proto.Marshal(&stockv1.Stock{
+		Symbol:   "AAPL",
+		Exchange: "NASDAQ",
+		Scores:   []*stockv1.ScoreEntry{{Category: "momentum", Value: 0.5}},
+	})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	if err := c.handle(context.Background(), kafkaMsg.Message{Value: raw}); err != nil {
+		t.Fatalf("handle() error = %v, want nil", err)
+	}
+	if !store.called {
+		t.Fatal("store.UpdateStock not called, want it called")
+	}
+	if got := len(store.lastScores); got != 1 {
+		t.Fatalf("store lastScores count = %d, want 1: %v", got, store.lastScores)
+	}
+	if got := store.lastScores["momentum"]; got != 0.5 {
+		t.Errorf("store lastScores[momentum] = %v, want 0.5", got)
+	}
+	for cat := range store.lastScores {
+		if cat != "momentum" {
+			t.Errorf("store lastScores has category %q, want only %q", cat, "momentum")
+		}
+	}
+}
+
+// TestHandle_ScorelessMessagePassesNilMap verifies that a message without scores
+// reaches the store as a nil map (the documented toMap(nil) contract).
+func TestHandle_ScorelessMessagePassesNilMap(t *testing.T) {
+	store := &fakeStore{}
+	c := New(Config{}, store, &fakePublisher{})
+	raw, err := proto.Marshal(&stockv1.Stock{Symbol: "AAPL", Exchange: "NASDAQ"})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	if err := c.handle(context.Background(), kafkaMsg.Message{Value: raw}); err != nil {
+		t.Fatalf("handle() error = %v, want nil", err)
+	}
+	if !store.called {
+		t.Fatal("store.UpdateStock not called, want it called")
+	}
+	if store.lastScores != nil {
+		t.Fatalf("store lastScores = %v, want nil", store.lastScores)
+	}
+}
+
 // TestDecodeStock_RoundTrip verifies a proto.Marshal + decodeStock round-trip.
 func TestDecodeStock_RoundTrip(t *testing.T) {
 	testMsgs := []*stockv1.Stock{

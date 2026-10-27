@@ -14,6 +14,7 @@
                                                                   │ stocks,    │
                                                                   │ scores     │
                                                                   └────────────┘
+```
 
 ## 2. Requirements Summary
 
@@ -70,6 +71,21 @@ Indexes:
 Indexes:
 `id` PRIMARY KEY (`stock_id`, `category`)
 composite index on `(category, value DESC)`
+
+#### Score upsert semantics
+
+`UpdateStock` merges scores; it never replaces the set. Each supplied `(symbol, exchange, category)` is upserted inside the same transaction as the stock row:
+
+```sql
+INSERT INTO scores (symbol, exchange, category, value, timestamp)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (symbol, exchange, category)
+DO UPDATE SET value = EXCLUDED.value, timestamp = now();
+```
+
+The statement never deletes score rows, so a partial update leaves categories omitted from the request with both their `value` and their `timestamp` intact. The stock-level `stocks.timestamp` is refreshed by every upsert, including one that supplies no scores. The only deletions of `scores` rows are `RemoveStock` (explicit) and `RemoveOldStocks` (retention).
+
+Range checking is layered: Kafka ingestion rejects values outside `[-1.0, 1.0]` before calling the store, and the `CHECK (value BETWEEN -1.0 AND 1.0)` constraint on `scores.value` is the database-level backstop for every path.
 
 ---
 
