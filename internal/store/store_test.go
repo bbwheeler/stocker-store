@@ -350,6 +350,179 @@ func TestTopStocks(t *testing.T) {
 	})
 }
 
+// TestUpdateStockPreservesUnmentionedScores proves that an upsert merges the
+// incoming score categories into the stored set: categories present in the
+// request are inserted or refreshed, while categories absent from the request
+// keep both their value and their last-updated timestamp. nil and empty maps
+// refresh only the stock-level timestamp.
+func TestUpdateStockPreservesUnmentionedScores(t *testing.T) {
+	s := testStore(t)
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// assertScorelessUpsert keeps the nil and empty-map cases identical: both
+	// must leave every score untouched while still touching the stock row.
+	assertScorelessUpsert := func(t *testing.T, scores map[string]float64) {
+		t.Helper()
+
+		sym, exh := uniqueTag()
+		defer clearStock(t, s, sym, exh)
+
+		base := time.Now().UTC().Add(-3 * time.Hour)
+		seedStock(t, s, sym, exh, base)
+		seedScore(t, s, sym, exh, "momentum", 0.25, base)
+		seedScore(t, s, sym, exh, "sentiment", 0.9, base.Add(time.Hour))
+
+		baselineMomentum := readScore(t, s, sym, exh, "momentum")
+		baselineSentiment := readScore(t, s, sym, exh, "sentiment")
+
+		got, _, err := s.UpdateStock(ctx, sym, exh, scores)
+		if err != nil {
+			t.Fatalf("UpdateStock: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("UpdateStock returned nil stock")
+		}
+
+		momentum := readScore(t, s, sym, exh, "momentum")
+		if momentum.Value != baselineMomentum.Value {
+			t.Fatalf("momentum value = %v, want unchanged %v", momentum.Value, baselineMomentum.Value)
+		}
+		if !momentum.UpdatedAt.Equal(baselineMomentum.UpdatedAt) {
+			t.Fatalf("momentum UpdatedAt = %v, want unchanged %v", momentum.UpdatedAt, baselineMomentum.UpdatedAt)
+		}
+
+		sentiment := readScore(t, s, sym, exh, "sentiment")
+		if sentiment.Value != baselineSentiment.Value {
+			t.Fatalf("sentiment value = %v, want unchanged %v", sentiment.Value, baselineSentiment.Value)
+		}
+		if !sentiment.UpdatedAt.Equal(baselineSentiment.UpdatedAt) {
+			t.Fatalf("sentiment UpdatedAt = %v, want unchanged %v", sentiment.UpdatedAt, baselineSentiment.UpdatedAt)
+		}
+
+		if n := scoreCount(t, s, sym, exh); n != 2 {
+			t.Fatalf("score count = %d, want 2", n)
+		}
+
+		requireScoreValue(t, got.Scores, "momentum", 0.25)
+		requireScoreValue(t, got.Scores, "sentiment", 0.9)
+
+		// The stock-level timestamp is always refreshed by an upsert, even when
+		// no score rows are written.
+		if !got.Updated.After(base) {
+			t.Fatalf("stock Updated = %v, want after seeded %v", got.Updated, base)
+		}
+	}
+
+	t.Run("subset update keeps unmentioned value and timestamp", func(t *testing.T) {
+		sym, exh := uniqueTag()
+		defer clearStock(t, s, sym, exh)
+
+		base := time.Now().UTC().Add(-3 * time.Hour)
+		seedStock(t, s, sym, exh, base)
+		seedScore(t, s, sym, exh, "momentum", 0.25, base)
+		seedScore(t, s, sym, exh, "sentiment", 0.9, base.Add(time.Hour))
+
+		baselineMomentum := readScore(t, s, sym, exh, "momentum")
+		baselineSentiment := readScore(t, s, sym, exh, "sentiment")
+
+		got, _, err := s.UpdateStock(ctx, sym, exh, map[string]float64{"momentum": -0.4})
+		if err != nil {
+			t.Fatalf("UpdateStock: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("UpdateStock returned nil stock")
+		}
+
+		momentum := readScore(t, s, sym, exh, "momentum")
+		if momentum.Value != -0.4 {
+			t.Fatalf("momentum value = %v, want -0.4", momentum.Value)
+		}
+		if !momentum.UpdatedAt.After(baselineMomentum.UpdatedAt) {
+			t.Fatalf("momentum UpdatedAt = %v, want after baseline %v", momentum.UpdatedAt, baselineMomentum.UpdatedAt)
+		}
+
+		sentiment := readScore(t, s, sym, exh, "sentiment")
+		if sentiment.Value != 0.9 {
+			t.Fatalf("sentiment value = %v, want 0.9", sentiment.Value)
+		}
+		if !sentiment.UpdatedAt.Equal(baselineSentiment.UpdatedAt) {
+			t.Fatalf("sentiment UpdatedAt = %v, want unchanged %v", sentiment.UpdatedAt, baselineSentiment.UpdatedAt)
+		}
+
+		if n := scoreCount(t, s, sym, exh); n != 2 {
+			t.Fatalf("score count = %d, want 2", n)
+		}
+
+		requireScoreValue(t, got.Scores, "momentum", -0.4)
+		requireScoreValue(t, got.Scores, "sentiment", 0.9)
+	})
+
+	t.Run("new category keeps existing scores", func(t *testing.T) {
+		sym, exh := uniqueTag()
+		defer clearStock(t, s, sym, exh)
+
+		base := time.Now().UTC().Add(-3 * time.Hour)
+		seedStock(t, s, sym, exh, base)
+		seedScore(t, s, sym, exh, "momentum", 0.25, base)
+
+		baselineMomentum := readScore(t, s, sym, exh, "momentum")
+
+		got, _, err := s.UpdateStock(ctx, sym, exh, map[string]float64{"quality": 0.5})
+		if err != nil {
+			t.Fatalf("UpdateStock: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("UpdateStock returned nil stock")
+		}
+
+		momentum := readScore(t, s, sym, exh, "momentum")
+		if momentum.Value != 0.25 {
+			t.Fatalf("momentum value = %v, want unchanged 0.25", momentum.Value)
+		}
+		if !momentum.UpdatedAt.Equal(baselineMomentum.UpdatedAt) {
+			t.Fatalf("momentum UpdatedAt = %v, want unchanged %v", momentum.UpdatedAt, baselineMomentum.UpdatedAt)
+		}
+
+		quality := readScore(t, s, sym, exh, "quality")
+		if quality.Value != 0.5 {
+			t.Fatalf("quality value = %v, want 0.5", quality.Value)
+		}
+		if quality.UpdatedAt.IsZero() {
+			t.Fatalf("quality UpdatedAt = zero, want non-zero")
+		}
+
+		if n := scoreCount(t, s, sym, exh); n != 2 {
+			t.Fatalf("score count = %d, want 2", n)
+		}
+
+		requireScoreValue(t, got.Scores, "momentum", 0.25)
+		requireScoreValue(t, got.Scores, "quality", 0.5)
+	})
+
+	t.Run("nil scores keeps all scores", func(t *testing.T) {
+		assertScorelessUpsert(t, nil)
+	})
+
+	t.Run("empty map keeps all scores", func(t *testing.T) {
+		assertScorelessUpsert(t, map[string]float64{})
+	})
+}
+
+// requireScoreValue asserts that a hydrated score set contains category with
+// exactly want.
+func requireScoreValue(t *testing.T, scores []ScoreEntry, category string, want float64) {
+	t.Helper()
+	entry := scoreByCategory(scores, category)
+	if entry == nil {
+		t.Fatalf("response missing %q score: %v", category, scores)
+	}
+	if entry.Value != want {
+		t.Fatalf("response %q value = %v, want %v", category, entry.Value, want)
+	}
+}
+
 // scoreByCategory returns the ScoreEntry for category, or nil if absent.
 func scoreByCategory(scores []ScoreEntry, category string) *ScoreEntry {
 	for i := range scores {
