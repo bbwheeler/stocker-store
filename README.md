@@ -36,6 +36,7 @@ Stocker Store stores thousands of `(symbol, exchange)` stocks plus **dynamic** s
   - [Kafka Ingestion](#kafka-ingestion)
     - [Message schema](#message-schema)
     - [Validation](#validation)
+    - [New-Stock Output](#new-stock-output)
   - [Configuration](#configuration)
     - [Environment Variables](#environment-variables)
     - [Sample `.env.podman`](#sample-envpodman)
@@ -334,10 +335,8 @@ To use the Quadlets, place the unit files (for example in `/etc/systemd/user` or
 `deploy/push.sh` builds and pushes the image:
 
 ```bash
-./deploy/push.sh   # -> podman push containers.wheeli.ca/stocker-list:latest
+./deploy/push.sh   # -> podman push containers.wheeli.ca/stocker-store:latest
 ```
-
-> **Known inconsistency:** the pushed image name `stocker-list:latest` does not match the Quadlet's `stocker-store:latest`. Neither is asserted here as the canonical name.
 
 ## Database
 

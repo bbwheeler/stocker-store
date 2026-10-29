@@ -1,5 +1,6 @@
 [Unit]
 After=network-online.target
+After=kafka-broker-1.container
 
 [Container]
 Image=git.wheeli.ca/brian/stocker-store:latest
