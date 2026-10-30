@@ -7,16 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/segmentio/kafka-go"
 )
+
+// errInvalidMessage marks a message-level failure that is permanent: the
+// message is logged and skipped rather than retried, because redelivery can
+// never make it valid (decode or validation error).
+var errInvalidMessage = errors.New("invalid kafka stock message")
 
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
@@ -118,7 +125,11 @@ func (c *Client) Run(ctx context.Context) error {
 
 // consume fetches and processes messages from r until a fetch or commit
 // error, reporting whether at least one message was fetched before the
-// failure (used by Run to reset the backoff).
+// failure (used by Run to reset the backoff). A message's offset is
+// committed only after processMessage reports it is done (applied or
+// permanently skipped); a commit failure returns the error so the reconnect
+// loop re-creates the reader and the message is redelivered if the commit
+// did not take.
 func (c *Client) consume(ctx context.Context, r messageReader) (progressed bool, err error) {
 	for {
 		msg, err := r.FetchMessage(ctx)
@@ -127,18 +138,58 @@ func (c *Client) consume(ctx context.Context, r messageReader) (progressed bool,
 		}
 		progressed = true
 
-		// Committing before handling is intentional for this step: it
-		// preserves the previous commit-before-handle delivery behavior
-		// exactly. A later step of the fix plan moves the commit after
-		// successful processing.
+		if err := c.processMessage(ctx, msg); err != nil {
+			return progressed, err
+		}
 		if err := r.CommitMessages(ctx, msg); err != nil {
 			return progressed, err
 		}
-
-		if err := c.handle(ctx, msg); err != nil {
-			log.Printf("kafka: dropping message %s:%d: %v", msg.Topic, msg.Offset, err)
-		}
 	}
+}
+
+// processMessage handles a single message. Transient failures (DB down,
+// timeouts, connection refused) are retried on the same message with capped
+// exponential backoff (retryMin doubling up to retryMax); the message is
+// never dropped on a transient error. Permanently invalid messages are
+// logged once and skipped. Returns nil when the message is done — applied
+// or deliberately skipped — so the caller can commit its offset.
+func (c *Client) processMessage(ctx context.Context, msg kafka.Message) error {
+	delay := c.retryMin
+	for {
+		err := c.handle(ctx, msg)
+		if err == nil {
+			return nil
+		}
+		if isPermanent(err) {
+			log.Printf("kafka: skipping message %s:%d:%d key=%s: %v", msg.Topic, msg.Partition, msg.Offset, msg.Key, err)
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Printf("kafka: transient failure for %s:%d:%d, retrying in %s: %v", msg.Topic, msg.Partition, msg.Offset, delay, err)
+		if !c.sleep(ctx, delay) {
+			return ctx.Err()
+		}
+		delay = min(delay*2, c.retryMax)
+	}
+}
+
+// isPermanent reports whether err is a message-level failure that must be
+// skipped rather than retried: an invalid message (decode/validation) or a
+// Postgres data exception (SQLSTATE class 22) / integrity constraint (class
+// 23) violation. Everything else — connectivity, timeouts, pool exhaustion,
+// serialization failures — is transient.
+func isPermanent(err error) bool {
+	if errors.Is(err, errInvalidMessage) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return len(pgErr.Code) >= 2 &&
+			(strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23"))
+	}
+	return false
 }
 
 // sleepContext waits for d or until ctx is done, reporting whether the full
@@ -155,24 +206,27 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 }
 
 // handle decodes a single kafka message and upserts the stock into the store.
-// When the upsert was an INSERT (a new (symbol, exchange) pair), it also
-// publishes a new-stock event on the output topic (best-effort: a publish
-// failure is logged, not returned).
+// Decode and validation failures are wrapped with errInvalidMessage so the
+// caller can classify them as permanent; store errors are returned unwrapped
+// (they are transient unless classified separately). When the upsert was an
+// INSERT (a new (symbol, exchange) pair), it also publishes a new-stock event
+// on the output topic (best-effort: a publish failure is logged, not
+// returned).
 func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	m, err := c.decoder(msg.Value)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errInvalidMessage, err)
 	}
 
 	if m.Symbol == "" || m.Exchange == "" {
-		return errors.New("stock message missing symbol or exchange")
+		return fmt.Errorf("%w: stock message missing symbol or exchange", errInvalidMessage)
 	}
 
 	for _, e := range m.GetScores() {
 		v := e.GetValue()
 		cat := e.GetCategory()
 		if v < -1.0 || v > 1.0 {
-			return fmt.Errorf("score %s value %v out of range [-1, 1]", cat, v)
+			return fmt.Errorf("%w: stock %s/%s: score %s value %v out of range [-1, 1]", errInvalidMessage, m.Symbol, m.Exchange, cat, v)
 		}
 	}
 
@@ -189,13 +243,23 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	return nil
 }
 
-// decodeStock parses a protobuf stock message.
+// decodeStock parses a protobuf stock message. On failure it reports the
+// payload length and a truncated hex prefix so an undecodable message is
+// diagnosable from logs alone.
 func decodeStock(raw []byte) (*stockv1.Stock, error) {
 	m := new(stockv1.Stock)
 	if err := proto.Unmarshal(raw, m); err != nil {
-		return nil, fmt.Errorf("decode stock message: %w", err)
+		return nil, fmt.Errorf("decode stock message (len=%d prefix=%x): %w", len(raw), prefixBytes(raw, 32), err)
 	}
 	return m, nil
+}
+
+// prefixBytes returns at most the first n bytes of b for compact log output.
+func prefixBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
 }
 
 // toMap converts a repeated list of score entries into the map shape the store

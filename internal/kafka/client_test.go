@@ -1,9 +1,11 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -560,6 +563,7 @@ func TestPublisher_RealAndNoop(t *testing.T) {
 type fakeReader struct {
 	fetch     func(ctx context.Context) (kafkaMsg.Message, error)
 	commitErr error
+	events    *eventLog // optional; records a "commit" event per commit
 
 	mu      sync.Mutex
 	commits int
@@ -572,8 +576,11 @@ func (f *fakeReader) FetchMessage(ctx context.Context) (kafkaMsg.Message, error)
 
 func (f *fakeReader) CommitMessages(ctx context.Context, msgs ...kafkaMsg.Message) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.commits++
+	f.mu.Unlock()
+	if f.events != nil {
+		f.events.record("commit")
+	}
 	return f.commitErr
 }
 
@@ -935,4 +942,328 @@ func TestRun_ReturnsConfigValidationError(t *testing.T) {
 	if got := atomic.LoadInt32(&factories); got != 0 {
 		t.Errorf("newReader called %d times, want 0 for invalid config", got)
 	}
+}
+
+// ---- Run tests (commit after success, permanent vs transient) ----
+
+// eventLog is a mutex-protected ordered event log, used to assert the
+// relative order of store updates and offset commits.
+type eventLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *eventLog) record(e string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, e)
+}
+
+func (l *eventLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+// scriptedStore records each UpdateStock call as an "update" event and fails
+// the first failFirst calls with err before succeeding.
+type scriptedStore struct {
+	events    *eventLog
+	failFirst int
+	err       error
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *scriptedStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
+	s.mu.Lock()
+	s.calls++
+	n := s.calls
+	s.mu.Unlock()
+	s.events.record("update")
+	if n <= s.failFirst {
+		return nil, false, s.err
+	}
+	return &store.Stock{
+		Symbol:   symbol,
+		Exchange: exchange,
+		Updated:  time.Now(),
+		Scores:   toStoreScores(scores),
+	}, false, nil
+}
+
+func (s *scriptedStore) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// wantEvents asserts the exact ordered event sequence.
+func wantEvents(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("events[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestRun_CommitsAfterSuccessfulHandle verifies at-least-once ordering: the
+// offset is committed exactly once and strictly after the store write.
+func TestRun_CommitsAfterSuccessfulHandle(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:     "stocks",
+		Partition: 0,
+		Offset:    5,
+		Key:       []byte("AAPL"),
+		Value:     marshalStock(t, "AAPL", "NASDAQ", map[string]float64{"momentum": 0.5}),
+	}
+
+	events := &eventLog{}
+	r := &fakeReader{fetch: yieldThenBlock(validMsg), events: events}
+	st := &scriptedStore{events: events}
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return len(events.snapshot()) >= 2 })
+
+	wantEvents(t, events.snapshot(), []string{"update", "commit"})
+	if st.callCount() != 1 {
+		t.Errorf("store calls = %d, want 1", st.callCount())
+	}
+	if r.commitCount() != 1 {
+		t.Errorf("commits = %d, want 1", r.commitCount())
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
+}
+
+// TestRun_DoesNotCommitOnTransientStoreErrorUntilSuccess verifies that a
+// transient store failure retries the SAME message without committing, and
+// commits only after the successful attempt.
+func TestRun_DoesNotCommitOnTransientStoreErrorUntilSuccess(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:  "stocks",
+		Offset: 6,
+		Key:    []byte("TSLA"),
+		Value:  marshalStock(t, "TSLA", "NYSE", map[string]float64{"value": -0.25}),
+	}
+
+	events := &eventLog{}
+	r := &fakeReader{fetch: yieldThenBlock(validMsg), events: events}
+	st := &scriptedStore{events: events, failFirst: 1, err: errors.New("connection refused")}
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	// Tiny injected bounds keep the retry sleep at ~1ms: fast and bounded.
+	c.retryMin = time.Millisecond
+	c.retryMax = 4 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return containsEvent(events.snapshot(), "commit") })
+
+	wantEvents(t, events.snapshot(), []string{"update", "update", "commit"})
+	if st.callCount() != 2 {
+		t.Errorf("store calls = %d, want 2 (retry of the same message)", st.callCount())
+	}
+	if r.commitCount() != 1 {
+		t.Errorf("commits = %d, want 1 (only after success)", r.commitCount())
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
+}
+
+// TestRun_SkipsPermanentDecodeErrorAndCommits verifies that an undecodable
+// payload is logged once, never reaches the store, and its offset is
+// committed so it cannot block later messages.
+func TestRun_SkipsPermanentDecodeErrorAndCommits(t *testing.T) {
+	garbage := kafkaMsg.Message{
+		Topic:     "stocks",
+		Partition: 0,
+		Offset:    9,
+		Key:       []byte("bad-key"),
+		Value:     []byte{0x01, 0x02, 0xff, 0xfe},
+	}
+
+	events := &eventLog{}
+	r := &fakeReader{fetch: yieldThenBlock(garbage), events: events}
+	st := &scriptedStore{events: events}
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return r.commitCount() == 1 })
+
+	if st.callCount() != 0 {
+		t.Errorf("store calls = %d, want 0 (decode error must not reach the store)", st.callCount())
+	}
+	if r.commitCount() != 1 {
+		t.Errorf("commits = %d, want 1", r.commitCount())
+	}
+	out := logBuf.String()
+	for _, want := range []string{"skipping message", "stocks:0:9", "key=bad-key", "decode stock message"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q; got:\n%s", want, out)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
+}
+
+// TestRun_SkipsPgConstraintViolationAndCommits verifies that a Postgres
+// integrity violation (CHECK, SQLSTATE 23514) is permanent: exactly one
+// store attempt, one commit, no retry loop.
+func TestRun_SkipsPgConstraintViolationAndCommits(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:  "stocks",
+		Offset: 12,
+		Key:    []byte("AAPL"),
+		Value:  marshalStock(t, "AAPL", "NASDAQ", map[string]float64{"momentum": 0.6}),
+	}
+
+	events := &eventLog{}
+	r := &fakeReader{fetch: yieldThenBlock(validMsg), events: events}
+	st := &scriptedStore{
+		events:    events,
+		failFirst: 1,
+		err: &pgconn.PgError{
+			Code:    "23514",
+			Message: `new row for relation "scores" violates check constraint "scores_value_check"`,
+		},
+	}
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	// Tiny bounds so a (wrong) transient classification fails fast instead
+	// of sleeping 1s per retry.
+	c.retryMin = time.Millisecond
+	c.retryMax = 4 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return r.commitCount() == 1 })
+
+	if st.callCount() != 1 {
+		t.Errorf("store calls = %d, want 1 (constraint violation must not be retried)", st.callCount())
+	}
+	if r.commitCount() != 1 {
+		t.Errorf("commits = %d, want 1", r.commitCount())
+	}
+	wantEvents(t, events.snapshot(), []string{"update", "commit"})
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
+}
+
+// TestIsPermanentError pins the permanent/transient classification table.
+func TestIsPermanentError(t *testing.T) {
+	decodeErr := fmt.Errorf("%w: decode stock message (len=4 prefix=0102fffe): proto: cannot parse invalid wire-format data", errInvalidMessage)
+	validationErr := fmt.Errorf("%w: stock AAPL/NASDAQ: score momentum value 1.5 out of range [-1, 1]", errInvalidMessage)
+
+	testCases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"decode sentinel", decodeErr, true},
+		{"validation sentinel", validationErr, true},
+		{"pg check violation 23514", &pgconn.PgError{Code: "23514"}, true},
+		{"pg fk violation 23503", &pgconn.PgError{Code: "23503"}, true},
+		{"pg bad input 22P02", &pgconn.PgError{Code: "22P02"}, true},
+		{"wrapped pg error", fmt.Errorf("upsert score: %w", &pgconn.PgError{Code: "23514"}), true},
+		{"pg serialization failure 40001", &pgconn.PgError{Code: "40001"}, false},
+		{"pg error with empty code", &pgconn.PgError{}, false},
+		{"plain error", errors.New("connection refused"), false},
+		{"context deadline exceeded", context.DeadlineExceeded, false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPermanent(tc.err); got != tc.want {
+				t.Errorf("isPermanent(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandle_ErrorsArePermanent verifies the real errors produced by handle
+// (decode, missing identity, out-of-range score) classify as permanent.
+func TestHandle_ErrorsArePermanent(t *testing.T) {
+	st := &fakeStore{}
+	c := New(Config{}, st, &fakePublisher{})
+
+	testCases := []struct {
+		name string
+		msg  kafkaMsg.Message
+	}{
+		{"garbage payload", kafkaMsg.Message{Value: []byte{0x01, 0x02, 0xff, 0xfe}}},
+		{"missing symbol", kafkaMsg.Message{Value: marshalStock(t, "", "NASDAQ", nil)}},
+		{"missing exchange", kafkaMsg.Message{Value: marshalStock(t, "AAPL", "", nil)}},
+		{"out of range score", kafkaMsg.Message{Value: marshalStock(t, "AAPL", "NASDAQ", map[string]float64{"momentum": 1.5})}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := c.handle(context.Background(), tc.msg)
+			if err == nil {
+				t.Fatal("handle() error = nil, want error")
+			}
+			if !isPermanent(err) {
+				t.Errorf("isPermanent(handle error %v) = false, want true", err)
+			}
+			if st.called {
+				t.Error("store.UpdateStock called, want it not to be called")
+			}
+		})
+	}
+}
+
+// containsEvent reports whether the ordered event list contains e.
+func containsEvent(events []string, e string) bool {
+	for _, x := range events {
+		if x == e {
+			return true
+		}
+	}
+	return false
 }
