@@ -7,19 +7,37 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"strings"
+	"time"
 
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/segmentio/kafka-go"
 )
 
+// errInvalidMessage marks a message-level failure that is permanent: the
+// message is logged and skipped rather than retried, because redelivery can
+// never make it valid (decode or validation error).
+var errInvalidMessage = errors.New("invalid kafka stock message")
+
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
 	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
+}
+
+// messageReader is the subset of *kafka.Reader the consumer needs. Client
+// holds a factory producing it so tests can inject fake readers without a
+// broker.
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
 }
 
 // Config holds the settings required to consume the stocks topic.
@@ -36,6 +54,15 @@ type Client struct {
 	store     Store
 	publisher Publisher
 	decoder   func(raw []byte) (*stockv1.Stock, error)
+
+	// newReader creates a fresh message reader; sleep waits between
+	// reconnect attempts (context-aware, reporting whether the full delay
+	// elapsed). Both are injectable for tests; retryMin/retryMax bound the
+	// exponential reconnect backoff.
+	newReader func() messageReader
+	sleep     func(context.Context, time.Duration) bool
+	retryMin  time.Duration
+	retryMax  time.Duration
 }
 
 // New validates the configuration and creates a new Client. publisher may be
@@ -50,64 +77,169 @@ func New(cfg Config, store Store, publisher Publisher) *Client {
 		store:     store,
 		publisher: publisher,
 		decoder:   decodeStock,
+		newReader: func() messageReader {
+			return kafka.NewReader(newReaderConfig(cfg))
+		},
+		sleep:    sleepContext,
+		retryMin: time.Second,
+		retryMax: 30 * time.Second,
 	}
 }
 
-// Run consumes messages from the stocks topic until ctx is done or an
-// unrecoverable error occurs.
+// newReaderConfig builds the kafka-go reader settings for the stocks topic.
+// MinBytes is 1 (kafka-go's default): a small message on a quiet topic must
+// be delivered immediately, not after the fetch window (MaxWait, ~10 s by
+// default, only applies when MinBytes is unmet). MaxBytes stays at 1 MB and
+// MaxWait is left at the kafka-go default.
+func newReaderConfig(cfg Config) kafka.ReaderConfig {
+	return kafka.ReaderConfig{
+		Brokers:  cfg.Brokers,
+		Topic:    cfg.Topic,
+		GroupID:  cfg.GroupID,
+		MinBytes: 1,
+		MaxBytes: 1e6,
+	}
+}
+
+// Run consumes messages from the stocks topic until ctx is done. A fetch or
+// commit error closes the current reader, logs the failure, and reconnects
+// with a capped exponential backoff (retryMin doubling up to retryMax,
+// reset to retryMin after any successful fetch), so a broker outage never
+// stops ingestion permanently. Run returns nil on context cancellation and
+// the config validation error unchanged when the settings are invalid.
 func (c *Client) Run(ctx context.Context) error {
 	if err := c.cfg.validate(); err != nil {
 		return err
 	}
 
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  c.cfg.Brokers,
-		Topic:    c.cfg.Topic,
-		GroupID:  c.cfg.GroupID,
-		MinBytes: 1e3,
-		MaxBytes: 1e6,
-	})
-	defer reader.Close()
-
+	delay := c.retryMin
 	for {
+		r := c.newReader()
+		progressed, err := c.consume(ctx, r)
+		if cerr := r.Close(); cerr != nil {
+			log.Printf("kafka: closing reader: %v", cerr)
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
-
-		msg, err := reader.ReadMessage(ctx)
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		if progressed {
+			delay = c.retryMin
+		}
+		log.Printf("kafka: consumer stopped: %v; reconnecting in %s", err, delay)
+		if !c.sleep(ctx, delay) {
 			return nil
 		}
-		if err != nil {
-			return fmt.Errorf("read kafka message: %w", err)
-		}
+		delay = min(delay*2, c.retryMax)
+	}
+}
 
-		if err := c.handle(ctx, msg); err != nil {
-			log.Printf("kafka: dropping message %s:%d: %v", msg.Topic, msg.Offset, err)
-			continue
+// consume fetches and processes messages from r until a fetch or commit
+// error, reporting whether at least one message was fetched before the
+// failure (used by Run to reset the backoff). A message's offset is
+// committed only after processMessage reports it is done (applied or
+// permanently skipped); a commit failure returns the error so the reconnect
+// loop re-creates the reader and the message is redelivered if the commit
+// did not take.
+func (c *Client) consume(ctx context.Context, r messageReader) (progressed bool, err error) {
+	for {
+		msg, err := r.FetchMessage(ctx)
+		if err != nil {
+			return progressed, err
+		}
+		progressed = true
+
+		if err := c.processMessage(ctx, msg); err != nil {
+			return progressed, err
+		}
+		if err := r.CommitMessages(ctx, msg); err != nil {
+			return progressed, err
 		}
 	}
 }
 
+// processMessage handles a single message. Transient failures (DB down,
+// timeouts, connection refused) are retried on the same message with capped
+// exponential backoff (retryMin doubling up to retryMax); the message is
+// never dropped on a transient error. Permanently invalid messages are
+// logged once and skipped. Returns nil when the message is done — applied
+// or deliberately skipped — so the caller can commit its offset.
+func (c *Client) processMessage(ctx context.Context, msg kafka.Message) error {
+	delay := c.retryMin
+	for {
+		err := c.handle(ctx, msg)
+		if err == nil {
+			return nil
+		}
+		if isPermanent(err) {
+			log.Printf("kafka: skipping message %s:%d:%d key=%s: %v", msg.Topic, msg.Partition, msg.Offset, msg.Key, err)
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Printf("kafka: transient failure for %s:%d:%d key=%s, retrying in %s: %v", msg.Topic, msg.Partition, msg.Offset, msg.Key, delay, err)
+		if !c.sleep(ctx, delay) {
+			return ctx.Err()
+		}
+		delay = min(delay*2, c.retryMax)
+	}
+}
+
+// isPermanent reports whether err is a message-level failure that must be
+// skipped rather than retried: an invalid message (decode/validation) or a
+// Postgres data exception (SQLSTATE class 22) / integrity constraint (class
+// 23) violation. Everything else — connectivity, timeouts, pool exhaustion,
+// serialization failures — is transient.
+func isPermanent(err error) bool {
+	if errors.Is(err, errInvalidMessage) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return len(pgErr.Code) >= 2 &&
+			(strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23"))
+	}
+	return false
+}
+
+// sleepContext waits for d or until ctx is done, reporting whether the full
+// delay elapsed (false means ctx was cancelled).
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // handle decodes a single kafka message and upserts the stock into the store.
-// When the upsert was an INSERT (a new (symbol, exchange) pair), it also
-// publishes a new-stock event on the output topic (best-effort: a publish
-// failure is logged, not returned).
+// Decode and validation failures are wrapped with errInvalidMessage so the
+// caller can classify them as permanent; store errors are returned unwrapped
+// (they are transient unless classified separately). When the upsert was an
+// INSERT (a new (symbol, exchange) pair), it also publishes a new-stock event
+// on the output topic (best-effort: a publish failure is logged, not
+// returned).
 func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	m, err := c.decoder(msg.Value)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errInvalidMessage, err)
 	}
 
 	if m.Symbol == "" || m.Exchange == "" {
-		return errors.New("stock message missing symbol or exchange")
+		return fmt.Errorf("%w: stock message missing symbol or exchange", errInvalidMessage)
 	}
 
 	for _, e := range m.GetScores() {
 		v := e.GetValue()
 		cat := e.GetCategory()
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("%w: stock %s/%s: score %s value %v is not finite", errInvalidMessage, m.Symbol, m.Exchange, cat, v)
+		}
 		if v < -1.0 || v > 1.0 {
-			return fmt.Errorf("score %s value %v out of range [-1, 1]", cat, v)
+			return fmt.Errorf("%w: stock %s/%s: score %s value %v out of range [-1, 1]", errInvalidMessage, m.Symbol, m.Exchange, cat, v)
 		}
 	}
 
@@ -115,6 +247,11 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	if err != nil {
 		return err
 	}
+	// Log the write before the publish branch so a publish failure still
+	// records that the message was applied. One line per message keeps the
+	// log greppable.
+	log.Printf("kafka: applied %s:%d:%d %s/%s scores=%d inserted=%v",
+		msg.Topic, msg.Partition, msg.Offset, stored.Symbol, stored.Exchange, len(m.GetScores()), inserted)
 	if !inserted {
 		return nil
 	}
@@ -124,13 +261,23 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	return nil
 }
 
-// decodeStock parses a protobuf stock message.
+// decodeStock parses a protobuf stock message. On failure it reports the
+// payload length and a truncated hex prefix so an undecodable message is
+// diagnosable from logs alone.
 func decodeStock(raw []byte) (*stockv1.Stock, error) {
 	m := new(stockv1.Stock)
 	if err := proto.Unmarshal(raw, m); err != nil {
-		return nil, fmt.Errorf("decode stock message: %w", err)
+		return nil, fmt.Errorf("decode stock message (len=%d prefix=%x): %w", len(raw), prefixBytes(raw, 32), err)
 	}
 	return m, nil
+}
+
+// prefixBytes returns at most the first n bytes of b for compact log output.
+func prefixBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
 }
 
 // toMap converts a repeated list of score entries into the map shape the store
