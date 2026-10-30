@@ -14,7 +14,7 @@ Then get the import
 go get git.wheeli.ca/brian/stocker-store@latest
 ```
 
-Import the generated types (example for kafka types):
+Import the generated types (this `Stock` message is also the Kafka ingestion message — the consumer on `KAFKA_INPUT_TOPIC` decodes exactly this PROTOBUF schema):
 
 ```go
 import (
