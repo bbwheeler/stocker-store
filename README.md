@@ -450,8 +450,8 @@ podman logs stocker-store | grep -E 'database:|kafka'
 
 ```
 database: postgres://<user>@<host><path>          # sanitized target — never the password
-kafka subscriber: consuming "<topic>" via <brokers>
 stocker-store listening on :<port>
+kafka subscriber: consuming "<topic>" via <brokers>
 ```
 
 **Per-message success** — one line per applied message:
