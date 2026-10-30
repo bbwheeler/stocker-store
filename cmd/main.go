@@ -31,23 +31,19 @@ func main() {
 	}
 	addr := fmt.Sprintf(":%d", port)
 
-	dbUrl := os.Getenv("DATABASE_URL")
-	if dbUrl == "" {
+	dsn := databaseDSN(os.Getenv("DATABASE_URL"), os.Getenv("DATABASE_USERNAME"), os.Getenv("DATABASE_PASSWORD"))
+	if dsn == "" {
 		log.Fatal("DATABASE_URL required")
-		dbUrl = "localhost:5432/stocker?sslmode=disable"
 	}
-	password := os.Getenv("DATABASE_PASSWORD")
-	username := os.Getenv("DATABASE_USERNAME")
-	if password != "" && username != "" {
-		dbUrl = fmt.Sprintf("postgres://%s:%s@%s", username, url.QueryEscape(password), dbUrl)
-	} else {
-		dbUrl = fmt.Sprintf("postgres://%s", dbUrl)
-	}
+	// Log the sanitized target once (scheme, username, host and path only —
+	// never the password or query values) so the operator can confirm which
+	// database is being written.
+	log.Printf("database: %s", sanitizedDSN(dsn))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	st, err := store.NewStore(ctx, dbUrl)
+	st, err := store.NewStore(ctx, dsn)
 	if err != nil {
 		log.Fatalf("initialize store: %v", err)
 	}
@@ -79,8 +75,12 @@ func main() {
 
 	log.Printf("stocker-store listening on %s", addr)
 
+	// Run reconnects forever and returns only on context cancellation (nil)
+	// or a configuration error; a non-nil return is misconfiguration and
+	// must be fatal so systemd's Restart=always surfaces it instead of
+	// leaving a healthy-looking process with dead ingestion.
 	if err := runKafkaSubscriber(ctx, st, publisher); err != nil {
-		log.Printf("kafka subscriber: %v", err)
+		log.Fatalf("kafka subscriber: %v", err)
 	}
 
 	<-ctx.Done()
@@ -168,6 +168,40 @@ func envList(name string) []string {
 		return nil
 	}
 	return strings.Split(raw, ",")
+}
+
+// databaseDSN builds the Postgres DSN handed to the store. A full DSN
+// (postgres://… or postgresql://…) is authoritative and returned verbatim;
+// otherwise the legacy host:port/db form is prefixed with postgres:// and,
+// when both username and password are non-empty, credentials are embedded.
+// An empty raw value yields "" (the caller treats it as missing config).
+func databaseDSN(raw, username, password string) string {
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "postgres://") || strings.HasPrefix(raw, "postgresql://") {
+		return raw
+	}
+	if username != "" && password != "" {
+		return "postgres://" + url.UserPassword(username, password).String() + "@" + raw
+	}
+	return "postgres://" + raw
+}
+
+// sanitizedDSN renders a DSN for logs: scheme, username, host and path only.
+// The password and all query values are dropped. If the DSN cannot be
+// parsed, a generic placeholder is returned so the raw value (which may
+// contain secrets) never reaches the log.
+func sanitizedDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "<unparseable DSN>"
+	}
+	var user string
+	if u.User != nil && u.User.Username() != "" {
+		user = u.User.Username() + "@"
+	}
+	return fmt.Sprintf("%s://%s%s%s", u.Scheme, user, u.Host, u.Path)
 }
 
 // defaultGRPCPort is the listen port used when GRPC_PORT is unset or empty.
