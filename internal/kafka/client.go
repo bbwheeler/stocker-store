@@ -168,7 +168,7 @@ func (c *Client) processMessage(ctx context.Context, msg kafka.Message) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		log.Printf("kafka: transient failure for %s:%d:%d, retrying in %s: %v", msg.Topic, msg.Partition, msg.Offset, delay, err)
+		log.Printf("kafka: transient failure for %s:%d:%d key=%s, retrying in %s: %v", msg.Topic, msg.Partition, msg.Offset, msg.Key, delay, err)
 		if !c.sleep(ctx, delay) {
 			return ctx.Err()
 		}
@@ -238,6 +238,11 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	if err != nil {
 		return err
 	}
+	// Log the write before the publish branch so a publish failure still
+	// records that the message was applied. One line per message keeps the
+	// log greppable.
+	log.Printf("kafka: applied %s:%d:%d %s/%s scores=%d inserted=%v",
+		msg.Topic, msg.Partition, msg.Offset, stored.Symbol, stored.Exchange, len(m.GetScores()), inserted)
 	if !inserted {
 		return nil
 	}

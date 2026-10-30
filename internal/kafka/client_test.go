@@ -691,26 +691,28 @@ func (f *fakeReader) isClosed() bool {
 
 // countingStore is a Store test double that is safe to call from the Run
 // goroutine: it records the number of calls and the last arguments under a
-// mutex.
+// mutex. inserted controls the insert-vs-update flag it reports.
 type countingStore struct {
 	mu         sync.Mutex
 	calls      int
+	inserted   bool
 	lastSymbol string
 	lastExch   string
 }
 
 func (s *countingStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.calls++
 	s.lastSymbol = symbol
 	s.lastExch = exchange
+	inserted := s.inserted
+	s.mu.Unlock()
 	return &store.Stock{
 		Symbol:   symbol,
 		Exchange: exchange,
 		Updated:  time.Now(),
 		Scores:   toStoreScores(scores),
-	}, false, nil
+	}, inserted, nil
 }
 
 func (s *countingStore) callCount() int {
@@ -1352,4 +1354,185 @@ func containsEvent(events []string, e string) bool {
 		}
 	}
 	return false
+}
+
+// ---- Run tests (accepted/skip/retry logging) ----
+
+// captureLog redirects the standard logger into a buffer for the duration of
+// the test, restoring the previous writer afterwards. Tests using it must not
+// run in parallel with each other (the logger is global).
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
+
+// TestRun_LogsAppliedMessage verifies that every successfully applied message
+// produces one `kafka: applied …` line carrying the full coordinates, even
+// when the follow-up publish fails.
+func TestRun_LogsAppliedMessage(t *testing.T) {
+	testCases := []struct {
+		name         string
+		inserted     bool
+		wantInserted string
+	}{
+		{"update", false, "inserted=false"},
+		{"insert", true, "inserted=true"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			validMsg := kafkaMsg.Message{
+				Topic:     "stocks",
+				Partition: 2,
+				Offset:    13,
+				Key:       []byte("AAPL"),
+				Value:     marshalStock(t, "AAPL", "NASDAQ", map[string]float64{"momentum": 0.5, "value": -0.25}),
+			}
+
+			logBuf := captureLog(t)
+
+			r := &fakeReader{fetch: yieldThenBlock(validMsg)}
+			// The publish fails on the insert branch; the applied line must
+			// still be recorded because the DB write is authoritative.
+			st := &countingStore{inserted: tc.inserted}
+			pub := &fakePublisher{err: errors.New("kafka unavailable")}
+
+			c := New(testRunConfig(), st, pub)
+			c.newReader = func() messageReader { return r }
+			c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- c.Run(ctx) }()
+
+			waitFor(t, func() bool { return r.commitCount() == 1 })
+
+			out := logBuf.String()
+			for _, want := range []string{
+				"kafka: applied",
+				"stocks:2:13",
+				"AAPL/NASDAQ",
+				"scores=2",
+				tc.wantInserted,
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log output missing %q; got:\n%s", want, out)
+				}
+			}
+			if st.callCount() != 1 {
+				t.Errorf("store calls = %d, want 1", st.callCount())
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("Run returned %v while context is live", err)
+			default:
+			}
+		})
+	}
+}
+
+// TestRun_LogsSkippedMessage verifies the skip line carries topic, partition,
+// offset, key, and the undecodable payload's diagnostics.
+func TestRun_LogsSkippedMessage(t *testing.T) {
+	garbage := kafkaMsg.Message{
+		Topic:     "stocks",
+		Partition: 1,
+		Offset:    21,
+		Key:       []byte("corrupt"),
+		Value:     []byte{0x0a, 0xff, 0xfe, 0x01},
+	}
+
+	logBuf := captureLog(t)
+
+	r := &fakeReader{fetch: yieldThenBlock(garbage)}
+	st := &countingStore{}
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return r.commitCount() == 1 })
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"skipping message",
+		"stocks:1:21",
+		"key=corrupt",
+		// Payload diagnostics from decodeStock must not regress:
+		"decode stock message (len=4 prefix=0afffe01)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q; got:\n%s", want, out)
+		}
+	}
+	if st.callCount() != 0 {
+		t.Errorf("store calls = %d, want 0", st.callCount())
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
+}
+
+// TestRun_LogsTransientFailureWithKey verifies the retry line carries topic,
+// partition, offset, key, and the delay, and that the message is still
+// applied afterwards.
+func TestRun_LogsTransientFailureWithKey(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:     "stocks",
+		Partition: 0,
+		Offset:    6,
+		Key:       []byte("TSLA"),
+		Value:     marshalStock(t, "TSLA", "NYSE", map[string]float64{"value": -0.25}),
+	}
+
+	logBuf := captureLog(t)
+
+	events := &eventLog{}
+	r := &fakeReader{fetch: yieldThenBlock(validMsg), events: events}
+	st := &scriptedStore{events: events, failFirst: 1, err: errors.New("connection refused")}
+
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader { return r }
+	c.retryMin = time.Millisecond
+	c.retryMax = 4 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return r.commitCount() == 1 })
+
+	out := logBuf.String()
+	for _, want := range []string{
+		"transient failure for",
+		"stocks:0:6",
+		"key=TSLA",
+		"retrying in",
+		"connection refused",
+		// After the retry succeeds the message must still be applied:
+		"kafka: applied",
+		"TSLA/NYSE",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q; got:\n%s", want, out)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live", err)
+	default:
+	}
 }
