@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -264,6 +265,91 @@ func TestHandle_ScoreOutOfRange(t *testing.T) {
 				t.Errorf("handle() error = %q, want it to contain %q", err.Error(), "out of range")
 			}
 			if store.called {
+				t.Error("store.UpdateStock called, want it not to be called")
+			}
+		})
+	}
+}
+
+// TestHandle_RejectsNaNScore verifies that a NaN score is rejected before the
+// store is reached. NaN fails every range comparison, so without an explicit
+// non-finite check it would reach Postgres, trip the CHECK constraint, and
+// roll back the whole message (plan H5).
+func TestHandle_RejectsNaNScore(t *testing.T) {
+	st := &fakeStore{}
+	c := New(Config{}, st, &fakePublisher{})
+	// A valid score alongside the NaN: the whole message must be rejected
+	// without touching the store, so the valid score is not lost silently.
+	raw, err := proto.Marshal(&stockv1.Stock{
+		Symbol:   "AAPL",
+		Exchange: "NASDAQ",
+		Scores: []*stockv1.ScoreEntry{
+			{Category: "momentum", Value: 0.5},
+			{Category: "sentiment", Value: math.NaN()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	err = c.handle(context.Background(), kafkaMsg.Message{Value: raw})
+	if err == nil {
+		t.Fatal("handle() error = nil, want error for NaN score")
+	}
+	if !strings.Contains(err.Error(), "sentiment") {
+		t.Errorf("handle() error = %q, want it to mention the category %q", err.Error(), "sentiment")
+	}
+	if !strings.Contains(err.Error(), "not finite") {
+		t.Errorf("handle() error = %q, want it to contain %q", err.Error(), "not finite")
+	}
+	if !strings.Contains(err.Error(), "AAPL/NASDAQ") {
+		t.Errorf("handle() error = %q, want it to name the stock AAPL/NASDAQ", err.Error())
+	}
+	if !isPermanent(err) {
+		t.Errorf("isPermanent(handle error %v) = false, want true", err)
+	}
+	if st.called {
+		t.Error("store.UpdateStock called, want it not to be called")
+	}
+}
+
+// TestHandle_RejectsInfScore verifies that ±Inf scores are rejected
+// explicitly (they also fail the range check, but must be reported as
+// non-finite) without reaching the store.
+func TestHandle_RejectsInfScore(t *testing.T) {
+	testCases := []struct {
+		name  string
+		value float64
+	}{
+		{"positive infinity", math.Inf(1)},
+		{"negative infinity", math.Inf(-1)},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeStore{}
+			c := New(Config{}, st, &fakePublisher{})
+			raw, err := proto.Marshal(&stockv1.Stock{
+				Symbol:   "AAPL",
+				Exchange: "NASDAQ",
+				Scores:   []*stockv1.ScoreEntry{{Category: "quality", Value: tc.value}},
+			})
+			if err != nil {
+				t.Fatalf("proto.Marshal() error = %v", err)
+			}
+			err = c.handle(context.Background(), kafkaMsg.Message{Value: raw})
+			if err == nil {
+				t.Fatal("handle() error = nil, want error for infinite score")
+			}
+			if !strings.Contains(err.Error(), "quality") {
+				t.Errorf("handle() error = %q, want it to mention the category %q", err.Error(), "quality")
+			}
+			if !strings.Contains(err.Error(), "not finite") {
+				t.Errorf("handle() error = %q, want it to contain %q", err.Error(), "not finite")
+			}
+			if !isPermanent(err) {
+				t.Errorf("isPermanent(handle error %v) = false, want true", err)
+			}
+			if st.called {
 				t.Error("store.UpdateStock called, want it not to be called")
 			}
 		})

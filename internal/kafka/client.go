@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -225,6 +226,9 @@ func (c *Client) handle(ctx context.Context, msg kafka.Message) error {
 	for _, e := range m.GetScores() {
 		v := e.GetValue()
 		cat := e.GetCategory()
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("%w: stock %s/%s: score %s value %v is not finite", errInvalidMessage, m.Symbol, m.Exchange, cat, v)
+		}
 		if v < -1.0 || v > 1.0 {
 			return fmt.Errorf("%w: stock %s/%s: score %s value %v out of range [-1, 1]", errInvalidMessage, m.Symbol, m.Exchange, cat, v)
 		}
