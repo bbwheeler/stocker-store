@@ -78,17 +78,26 @@ func New(cfg Config, store Store, publisher Publisher) *Client {
 		publisher: publisher,
 		decoder:   decodeStock,
 		newReader: func() messageReader {
-			return kafka.NewReader(kafka.ReaderConfig{
-				Brokers:  cfg.Brokers,
-				Topic:    cfg.Topic,
-				GroupID:  cfg.GroupID,
-				MinBytes: 1e3,
-				MaxBytes: 1e6,
-			})
+			return kafka.NewReader(newReaderConfig(cfg))
 		},
 		sleep:    sleepContext,
 		retryMin: time.Second,
 		retryMax: 30 * time.Second,
+	}
+}
+
+// newReaderConfig builds the kafka-go reader settings for the stocks topic.
+// MinBytes is 1 (kafka-go's default): a small message on a quiet topic must
+// be delivered immediately, not after the fetch window (MaxWait, ~10 s by
+// default, only applies when MinBytes is unmet). MaxBytes stays at 1 MB and
+// MaxWait is left at the kafka-go default.
+func newReaderConfig(cfg Config) kafka.ReaderConfig {
+	return kafka.ReaderConfig{
+		Brokers:  cfg.Brokers,
+		Topic:    cfg.Topic,
+		GroupID:  cfg.GroupID,
+		MinBytes: 1,
+		MaxBytes: 1e6,
 	}
 }
 

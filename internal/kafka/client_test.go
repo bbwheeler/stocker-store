@@ -1536,3 +1536,33 @@ func TestRun_LogsTransientFailureWithKey(t *testing.T) {
 	default:
 	}
 }
+
+// ---- reader config test ----
+
+// TestNewReaderConfig pins the fetch settings produced by New: MinBytes 1 so
+// a small message on a quiet topic is delivered immediately instead of after
+// the MaxWait fetch window (~10s), MaxBytes 1 MB, and no MaxWait override
+// (kafka-go's default applies).
+func TestNewReaderConfig(t *testing.T) {
+	cfg := Config{Brokers: []string{"localhost:9092", "kafka:9092"}, Topic: "stocks", GroupID: "ingest"}
+	got := newReaderConfig(cfg)
+
+	if got.MinBytes != 1 {
+		t.Errorf("MinBytes = %d, want 1 (deliver small messages immediately)", got.MinBytes)
+	}
+	if got.MaxBytes != 1e6 {
+		t.Errorf("MaxBytes = %d, want 1e6", got.MaxBytes)
+	}
+	if got.MaxWait != 0 {
+		t.Errorf("MaxWait = %v, want 0 (use the kafka-go default)", got.MaxWait)
+	}
+	if len(got.Brokers) != 2 || got.Brokers[0] != "localhost:9092" || got.Brokers[1] != "kafka:9092" {
+		t.Errorf("Brokers = %v, want [localhost:9092 kafka:9092]", got.Brokers)
+	}
+	if got.Topic != "stocks" {
+		t.Errorf("Topic = %q, want %q", got.Topic, "stocks")
+	}
+	if got.GroupID != "ingest" {
+		t.Errorf("GroupID = %q, want %q", got.GroupID, "ingest")
+	}
+}
