@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	stockv1 "git.wheeli.ca/brian/stocker-store/proto/v1"
@@ -20,6 +21,15 @@ import (
 // Store is the subset of the stock store needed to ingest kafka messages.
 type Store interface {
 	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
+}
+
+// messageReader is the subset of *kafka.Reader the consumer needs. Client
+// holds a factory producing it so tests can inject fake readers without a
+// broker.
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
 }
 
 // Config holds the settings required to consume the stocks topic.
@@ -36,6 +46,15 @@ type Client struct {
 	store     Store
 	publisher Publisher
 	decoder   func(raw []byte) (*stockv1.Stock, error)
+
+	// newReader creates a fresh message reader; sleep waits between
+	// reconnect attempts (context-aware, reporting whether the full delay
+	// elapsed). Both are injectable for tests; retryMin/retryMax bound the
+	// exponential reconnect backoff.
+	newReader func() messageReader
+	sleep     func(context.Context, time.Duration) bool
+	retryMin  time.Duration
+	retryMax  time.Duration
 }
 
 // New validates the configuration and creates a new Client. publisher may be
@@ -50,42 +69,88 @@ func New(cfg Config, store Store, publisher Publisher) *Client {
 		store:     store,
 		publisher: publisher,
 		decoder:   decodeStock,
+		newReader: func() messageReader {
+			return kafka.NewReader(kafka.ReaderConfig{
+				Brokers:  cfg.Brokers,
+				Topic:    cfg.Topic,
+				GroupID:  cfg.GroupID,
+				MinBytes: 1e3,
+				MaxBytes: 1e6,
+			})
+		},
+		sleep:    sleepContext,
+		retryMin: time.Second,
+		retryMax: 30 * time.Second,
 	}
 }
 
-// Run consumes messages from the stocks topic until ctx is done or an
-// unrecoverable error occurs.
+// Run consumes messages from the stocks topic until ctx is done. A fetch or
+// commit error closes the current reader, logs the failure, and reconnects
+// with a capped exponential backoff (retryMin doubling up to retryMax,
+// reset to retryMin after any successful fetch), so a broker outage never
+// stops ingestion permanently. Run returns nil on context cancellation and
+// the config validation error unchanged when the settings are invalid.
 func (c *Client) Run(ctx context.Context) error {
 	if err := c.cfg.validate(); err != nil {
 		return err
 	}
 
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  c.cfg.Brokers,
-		Topic:    c.cfg.Topic,
-		GroupID:  c.cfg.GroupID,
-		MinBytes: 1e3,
-		MaxBytes: 1e6,
-	})
-	defer reader.Close()
-
+	delay := c.retryMin
 	for {
+		r := c.newReader()
+		progressed, err := c.consume(ctx, r)
+		if cerr := r.Close(); cerr != nil {
+			log.Printf("kafka: closing reader: %v", cerr)
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
-
-		msg, err := reader.ReadMessage(ctx)
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		if progressed {
+			delay = c.retryMin
+		}
+		log.Printf("kafka: consumer stopped: %v; reconnecting in %s", err, delay)
+		if !c.sleep(ctx, delay) {
 			return nil
 		}
+		delay = min(delay*2, c.retryMax)
+	}
+}
+
+// consume fetches and processes messages from r until a fetch or commit
+// error, reporting whether at least one message was fetched before the
+// failure (used by Run to reset the backoff).
+func (c *Client) consume(ctx context.Context, r messageReader) (progressed bool, err error) {
+	for {
+		msg, err := r.FetchMessage(ctx)
 		if err != nil {
-			return fmt.Errorf("read kafka message: %w", err)
+			return progressed, err
+		}
+		progressed = true
+
+		// Committing before handling is intentional for this step: it
+		// preserves the previous commit-before-handle delivery behavior
+		// exactly. A later step of the fix plan moves the commit after
+		// successful processing.
+		if err := r.CommitMessages(ctx, msg); err != nil {
+			return progressed, err
 		}
 
 		if err := c.handle(ctx, msg); err != nil {
 			log.Printf("kafka: dropping message %s:%d: %v", msg.Topic, msg.Offset, err)
-			continue
 		}
+	}
+}
+
+// sleepContext waits for d or until ctx is done, reporting whether the full
+// delay elapsed (false means ctx was cancelled).
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 

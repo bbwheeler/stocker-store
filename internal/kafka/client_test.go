@@ -2,8 +2,11 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -546,5 +549,390 @@ func TestPublisher_RealAndNoop(t *testing.T) {
 	}
 	if err := p2.Close(); err != nil {
 		t.Errorf("writer Close error = %v, want nil (closed without writes)", err)
+	}
+}
+
+// ---- Run tests (reconnecting consumer loop) ----
+
+// fakeReader is a messageReader test double whose fetch behavior is supplied
+// by each test. It records commits and close calls under a mutex so the test
+// goroutine can inspect it while Run is executing.
+type fakeReader struct {
+	fetch     func(ctx context.Context) (kafkaMsg.Message, error)
+	commitErr error
+
+	mu      sync.Mutex
+	commits int
+	closed  bool
+}
+
+func (f *fakeReader) FetchMessage(ctx context.Context) (kafkaMsg.Message, error) {
+	return f.fetch(ctx)
+}
+
+func (f *fakeReader) CommitMessages(ctx context.Context, msgs ...kafkaMsg.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits++
+	return f.commitErr
+}
+
+func (f *fakeReader) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *fakeReader) commitCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commits
+}
+
+func (f *fakeReader) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// countingStore is a Store test double that is safe to call from the Run
+// goroutine: it records the number of calls and the last arguments under a
+// mutex.
+type countingStore struct {
+	mu         sync.Mutex
+	calls      int
+	lastSymbol string
+	lastExch   string
+}
+
+func (s *countingStore) UpdateStock(_ context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	s.lastSymbol = symbol
+	s.lastExch = exchange
+	return &store.Stock{
+		Symbol:   symbol,
+		Exchange: exchange,
+		Updated:  time.Now(),
+		Scores:   toStoreScores(scores),
+	}, false, nil
+}
+
+func (s *countingStore) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *countingStore) last() (symbol, exchange string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSymbol, s.lastExch
+}
+
+// marshalStock builds a valid PROTOBUF stock payload for Run tests.
+func marshalStock(t *testing.T, symbol, exchange string, scores map[string]float64) []byte {
+	t.Helper()
+	var entries []*stockv1.ScoreEntry
+	for cat, v := range scores {
+		entries = append(entries, &stockv1.ScoreEntry{
+			Category:  cat,
+			Value:     v,
+			UpdatedAt: timestamppb.New(time.Now()),
+		})
+	}
+	raw, err := proto.Marshal(&stockv1.Stock{Symbol: symbol, Exchange: exchange, Scores: entries})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+	return raw
+}
+
+// yieldThenBlock returns a fetch function that delivers msg exactly once, then
+// blocks until the context is done.
+func yieldThenBlock(msg kafkaMsg.Message) func(context.Context) (kafkaMsg.Message, error) {
+	var calls int32
+	return func(ctx context.Context) (kafkaMsg.Message, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return msg, nil
+		}
+		<-ctx.Done()
+		return kafkaMsg.Message{}, ctx.Err()
+	}
+}
+
+// waitFor polls cond until it becomes true, failing the test after 2 s.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition not satisfied within 2s")
+}
+
+// testRunConfig returns a config that passes validation; no broker is ever
+// contacted because the reader factory is faked.
+func testRunConfig() Config {
+	return Config{Brokers: []string{"localhost:9092"}, Topic: "stocks", GroupID: "test"}
+}
+
+// TestRun_ReconnectsAfterFetchError verifies that a fetch failure does not
+// terminate Run: the reader is recreated, the previously failing reader is
+// closed, and messages from the new reader are still processed while the
+// context is live.
+func TestRun_ReconnectsAfterFetchError(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:     "stocks",
+		Partition: 0,
+		Offset:    1,
+		Value:     marshalStock(t, "AAPL", "NASDAQ", map[string]float64{"momentum": 0.5}),
+	}
+
+	readerA := &fakeReader{fetch: func(context.Context) (kafkaMsg.Message, error) {
+		return kafkaMsg.Message{}, errors.New("dial tcp: lookup kafka: no such host")
+	}}
+	readerB := &fakeReader{fetch: yieldThenBlock(validMsg)}
+
+	st := &countingStore{}
+	c := New(testRunConfig(), st, &fakePublisher{})
+
+	var mu sync.Mutex
+	factories := 0
+	c.newReader = func() messageReader {
+		mu.Lock()
+		defer mu.Unlock()
+		factories++
+		if factories == 1 {
+			return readerA
+		}
+		return readerB
+	}
+	c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return st.callCount() == 1 })
+
+	mu.Lock()
+	gotFactories := factories
+	mu.Unlock()
+	if gotFactories < 2 {
+		t.Errorf("newReader called %d times, want at least 2", gotFactories)
+	}
+	if !readerA.isClosed() {
+		t.Error("reader A not closed after fetch error")
+	}
+	if readerB.commitCount() != 1 {
+		t.Errorf("reader B commits = %d, want 1", readerB.commitCount())
+	}
+	if sym, exch := st.last(); sym != "AAPL" || exch != "NASDAQ" {
+		t.Errorf("store got %q/%q, want AAPL/NASDAQ", sym, exch)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live, want it to keep consuming", err)
+	default:
+	}
+}
+
+// TestRun_RetriesTransientFetchErrors verifies that several consecutive fetch
+// errors are retried with backoff and that a later message is still processed.
+func TestRun_RetriesTransientFetchErrors(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:  "stocks",
+		Offset: 4,
+		Value:  marshalStock(t, "TSLA", "NYSE", map[string]float64{"value": -0.25}),
+	}
+
+	var mu sync.Mutex
+	step := 0
+
+	st := &countingStore{}
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.newReader = func() messageReader {
+		return &fakeReader{fetch: func(ctx context.Context) (kafkaMsg.Message, error) {
+			mu.Lock()
+			step++
+			n := step
+			mu.Unlock()
+			if n <= 3 {
+				return kafkaMsg.Message{}, errors.New("transient fetch failure")
+			}
+			if n == 4 {
+				return validMsg, nil
+			}
+			<-ctx.Done()
+			return kafkaMsg.Message{}, ctx.Err()
+		}}
+	}
+	var sleeps int32
+	c.sleep = func(ctx context.Context, _ time.Duration) bool {
+		atomic.AddInt32(&sleeps, 1)
+		return ctx.Err() == nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	waitFor(t, func() bool { return st.callCount() == 1 })
+
+	if got := atomic.LoadInt32(&sleeps); got < 3 {
+		t.Errorf("sleep called %d times, want at least 3 (one per transient failure)", got)
+	}
+	if sym, exch := st.last(); sym != "TSLA" || exch != "NYSE" {
+		t.Errorf("store got %q/%q, want TSLA/NYSE", sym, exch)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while context is live, want it to keep retrying", err)
+	default:
+	}
+}
+
+// TestRun_ReturnsNilOnContextCancel verifies that cancelling the context while
+// FetchMessage is blocked makes Run return nil.
+func TestRun_ReturnsNilOnContextCancel(t *testing.T) {
+	fetching := make(chan struct{})
+
+	c := New(testRunConfig(), &countingStore{}, &fakePublisher{})
+	c.newReader = func() messageReader {
+		return &fakeReader{fetch: func(ctx context.Context) (kafkaMsg.Message, error) {
+			close(fetching)
+			<-ctx.Done()
+			return kafkaMsg.Message{}, ctx.Err()
+		}}
+	}
+	c.sleep = func(ctx context.Context, _ time.Duration) bool { return ctx.Err() == nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	<-fetching
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want nil on context cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// TestRun_BackoffGrowsToMaxAndResetsAfterProgress pins the backoff schedule:
+// the delay doubles (capped at retryMax) after failures with no progress and
+// resets to retryMin once a message was fetched successfully.
+func TestRun_BackoffGrowsToMaxAndResetsAfterProgress(t *testing.T) {
+	validMsg := kafkaMsg.Message{
+		Topic:  "stocks",
+		Offset: 7,
+		Value:  marshalStock(t, "MSFT", "XNAS", map[string]float64{"momentum": 0.1}),
+	}
+
+	errFetch := func(context.Context) (kafkaMsg.Message, error) {
+		return kafkaMsg.Message{}, errors.New("broker down")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	step := 0
+	var delays []time.Duration
+
+	st := &countingStore{}
+	c := New(testRunConfig(), st, &fakePublisher{})
+	c.retryMin = time.Millisecond
+	c.retryMax = 4 * time.Millisecond
+	c.newReader = func() messageReader {
+		mu.Lock()
+		step++
+		n := step
+		mu.Unlock()
+		switch n {
+		case 1, 2, 3:
+			return &fakeReader{fetch: errFetch}
+		case 4:
+			var calls int32
+			return &fakeReader{fetch: func(context.Context) (kafkaMsg.Message, error) {
+				if atomic.AddInt32(&calls, 1) == 1 {
+					return validMsg, nil
+				}
+				return kafkaMsg.Message{}, errors.New("fetch error after progress")
+			}}
+		default:
+			return &fakeReader{fetch: func(ctx context.Context) (kafkaMsg.Message, error) {
+				<-ctx.Done()
+				return kafkaMsg.Message{}, ctx.Err()
+			}}
+		}
+	}
+	c.sleep = func(_ context.Context, d time.Duration) bool {
+		mu.Lock()
+		delays = append(delays, d)
+		n := len(delays)
+		mu.Unlock()
+		if n == 4 {
+			// Expected full sequence observed (1ms, 2ms, 4ms capped, 1ms
+			// reset); end the test.
+			cancel()
+			return false
+		}
+		return true
+	}
+
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+
+	mu.Lock()
+	got := append([]time.Duration(nil), delays...)
+	mu.Unlock()
+	want := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, time.Millisecond}
+	if len(got) != len(want) {
+		t.Fatalf("backoff delays = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("backoff delay[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if st.callCount() != 1 {
+		t.Errorf("store calls = %d, want 1", st.callCount())
+	}
+}
+
+// TestRun_ReturnsConfigValidationError verifies Run surfaces the config
+// validation error unchanged and never creates a reader.
+func TestRun_ReturnsConfigValidationError(t *testing.T) {
+	c := New(Config{}, &countingStore{}, &fakePublisher{})
+	var factories int32
+	c.newReader = func() messageReader {
+		atomic.AddInt32(&factories, 1)
+		return nil
+	}
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() error = nil, want config validation error")
+	}
+	if !strings.Contains(err.Error(), "brokers") {
+		t.Errorf("Run() error = %q, want it to contain %q", err.Error(), "brokers")
+	}
+	if got := atomic.LoadInt32(&factories); got != 0 {
+		t.Errorf("newReader called %d times, want 0 for invalid config", got)
 	}
 }
