@@ -9,7 +9,7 @@ import (
 	"log"
 	"strings"
 
-	"git.wheeli.ca/brian/stocker-store/internal/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/events"
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 
@@ -33,14 +33,14 @@ type Store interface {
 type Server struct {
 	st.UnimplementedStockStoreServer
 	store     Store
-	publisher kafka.Publisher
+	publisher events.Publisher
 }
 
 // NewServer creates a new Server with the given store and event publisher. A
 // nil publisher is accepted and replaced by a no-op.
-func NewServer(store Store, publisher kafka.Publisher) *Server {
+func NewServer(store Store, publisher events.Publisher) *Server {
 	if publisher == nil {
-		publisher = kafka.Noop{}
+		publisher = events.Noop{}
 	}
 	return &Server{store: store, publisher: publisher}
 }
