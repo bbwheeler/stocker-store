@@ -335,7 +335,7 @@ set to a non-empty value (which also requires a non-empty `RABBITMQ_URL`):
 | Item | Value |
 | --- | --- |
 | Exchange | `$RABBITMQ_OUTPUT_EXCHANGE`, type `$RABBITMQ_OUTPUT_EXCHANGE_TYPE` (default `topic`) |
-| Exchange flags | `durable=true`, `autoDelete=false`, `internal=false`, `args=nil` |
+| Exchange flags | `durable=true`, `autoDelete=false`, `internal=false`, `noWait=false`, `args=nil` |
 | Routing key | `$RABBITMQ_OUTPUT_ROUTING_KEY` (default `stock.created.v1`) |
 | Delivery | `deliveryMode=2` (persistent), `mandatory=false`, publisher confirms awaited |
 | Properties | `content_type=application/x-protobuf`, `message_id=<symbol>`, `type=<output routing key>`, `timestamp=now UTC`, headers `{symbol, exchange}` |
@@ -352,9 +352,10 @@ database write, the gRPC response, or the ingestion ack.
 > **Loop warning.** The default output routing key (`stock.created.v1`) deliberately
 > differs from the input routing key. Pointing the output exchange at `stock.update` with
 > the input routing key would feed our own queue and create a loop; that exact
-> same-exchange/same-key case is rejected at startup. The service logs a warning when the
-> output and input exchange names match, but broader topic-pattern overlaps remain the
-> operator's responsibility.
+> same-exchange/same-key case is rejected at startup. When the output and input exchange
+> names match, the service logs
+> `rabbitmq: output exchange equals input exchange; verify the routing key does not create a feedback loop`
+> and leaves broader topic-pattern overlaps to the operator's responsibility.
 
 ## Configuration
 

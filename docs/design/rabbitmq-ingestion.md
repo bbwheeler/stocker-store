@@ -277,6 +277,7 @@ The URL is never logged.
 | `rabbitmq: transient failure for symbol=%s/%s, retrying in %s: %v` | Transient failure; same delivery retried. |
 | `rabbitmq: failed to publish new stock %s/%s: %v` | Output publish failed; ingestion continued. |
 | `rabbitmq: output publisher disabled (RABBITMQ_OUTPUT_EXCHANGE not set)` | Startup with output disabled. |
+| `rabbitmq: output exchange equals input exchange; verify the routing key does not create a feedback loop` | Startup with output enabled while `RABBITMQ_OUTPUT_EXCHANGE` equals `RABBITMQ_EXCHANGE`. |
 | `rabbitmq: publish failed; reconnecting and retrying once symbol=%s` | Output publish failed; one reconnect-and-retry. |
 
 Operational checks use broker tooling (`rabbitmqadmin list queues`, `list bindings`,
