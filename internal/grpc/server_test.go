@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"git.wheeli.ca/brian/stocker-store/internal/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/events"
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 	st "git.wheeli.ca/brian/stocker-store/proto/v1"
 )
@@ -159,7 +159,7 @@ func toDomainScores(m map[string]float64) []store.ScoreEntry {
 
 var _ Store = (*fakeStore)(nil)
 
-// fakePublisher is a test double for kafka.Publisher that records calls and
+// fakePublisher is a test double for events.Publisher that records calls and
 // can optionally inject a publish error. st and stockv1 name the same
 // protobuf package, so Publish(_ context.Context, *st.Stock) error satisfies
 // the interface.
@@ -177,9 +177,9 @@ func (f *fakePublisher) Publish(_ context.Context, stock *st.Stock) error {
 
 func (f *fakePublisher) Close() error { return nil }
 
-var _ kafka.Publisher = (*fakePublisher)(nil)
+var _ events.Publisher = (*fakePublisher)(nil)
 
-func newTestClient(t *testing.T, backend Store, publisher kafka.Publisher) st.StockStoreClient {
+func newTestClient(t *testing.T, backend Store, publisher events.Publisher) st.StockStoreClient {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	server := NewServer(backend, publisher).GRPCServer()
@@ -199,7 +199,7 @@ func newTestClient(t *testing.T, backend Store, publisher kafka.Publisher) st.St
 
 func TestUpdateStock(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs, kafka.Noop{})
+	client := newTestClient(t, fs, events.Noop{})
 	ctx := context.Background()
 
 	stock, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
@@ -224,7 +224,7 @@ func TestUpdateStock(t *testing.T) {
 }
 
 func TestRemoveStock(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	ctx := context.Background()
 
 	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{Symbol: "MSFT", Exchange: "NASDAQ"}); err != nil {
@@ -249,7 +249,7 @@ func TestRemoveStock(t *testing.T) {
 }
 
 func TestGetStock(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	ctx := context.Background()
 
 	if _, err := client.UpdateStock(ctx, &st.UpdateStockRequest{
@@ -273,7 +273,7 @@ func TestGetStock(t *testing.T) {
 }
 
 func TestGetStock_NotFound(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	_, err := client.GetStock(context.Background(), &st.GetStockRequest{Symbol: "NOPE"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("expected NotFound, got %v", err)
@@ -281,7 +281,7 @@ func TestGetStock_NotFound(t *testing.T) {
 }
 
 func TestGetStocks_Filters(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -327,7 +327,7 @@ func TestGetStocks_Filters(t *testing.T) {
 }
 
 func TestTopStocks(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -408,7 +408,7 @@ func TestTopStocks(t *testing.T) {
 
 func TestAddStocks(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs, kafka.Noop{})
+	client := newTestClient(t, fs, events.Noop{})
 	ctx := context.Background()
 
 	stream, err := client.AddStocks(ctx)
@@ -438,7 +438,7 @@ func TestAddStocks(t *testing.T) {
 }
 
 func TestAddStocks_EmptyStream(t *testing.T) {
-	client := newTestClient(t, newFakeStore(), kafka.Noop{})
+	client := newTestClient(t, newFakeStore(), events.Noop{})
 	stream, err := client.AddStocks(context.Background())
 	if err != nil {
 		t.Fatalf("AddStocks: %v", err)
@@ -455,7 +455,7 @@ func TestAddStocks_EmptyStream(t *testing.T) {
 // call are neither unioned in nor cleared out by the handler.
 func TestUpdateStock_PassesOnlyRequestScores(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs, kafka.Noop{})
+	client := newTestClient(t, fs, events.Noop{})
 	ctx := context.Background()
 
 	firstScores := map[string]float64{"momentum": 0.5, "sentiment": 0.9}
@@ -503,7 +503,7 @@ func TestUpdateStock_PassesOnlyRequestScores(t *testing.T) {
 // scores map reaches the store as a nil map, not an empty non-nil one.
 func TestUpdateStock_PassesNilScores(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs, kafka.Noop{})
+	client := newTestClient(t, fs, events.Noop{})
 
 	if _, err := client.UpdateStock(context.Background(), &st.UpdateStockRequest{
 		Symbol:   "PST",
@@ -521,7 +521,7 @@ func TestUpdateStock_PassesNilScores(t *testing.T) {
 // accumulate onto nor clear an earlier message's categories.
 func TestAddStocks_PassesPerMessageScores(t *testing.T) {
 	fs := newFakeStore()
-	client := newTestClient(t, fs, kafka.Noop{})
+	client := newTestClient(t, fs, events.Noop{})
 	ctx := context.Background()
 
 	stream, err := client.AddStocks(ctx)

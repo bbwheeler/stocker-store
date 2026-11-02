@@ -7,14 +7,19 @@
 ```
 ┌───────────┐       Protocol Buffer            ┌──────────────┐    ┌────────────┐
 │  Clients  │ ◄══════► gRPC (bidirectional)  ► │ stocker-store│◄──►│ PostgreSQL │
-│ (gRPC,    │       & kafka streaming          │              │    │            │
-│  Kafka)   │                                  └──────────────┘    └────────────┘
+│ (gRPC,    │       & RabbitMQ ingestion       │              │    │            │
+│ RabbitMQ) │                                  └──────────────┘    └────────────┘
 │           │                                      golang                    │
 └───────────┘                                                     ┌────────────┐
                                                                   │ stocks,    │
                                                                   │ scores     │
                                                                   └────────────┘
 ```
+
+Stock writes arrive over gRPC and over RabbitMQ ingestion from the upstream
+publisher. The RabbitMQ contract — exchange and queue topology, message schema,
+configuration, and delivery semantics — is documented in
+[`docs/design/rabbitmq-ingestion.md`](rabbitmq-ingestion.md).
 
 ## 2. Requirements Summary
 
@@ -37,14 +42,15 @@
 ┌─────────────────────────────────────┐     ┌───────────────────────────────────────┐
 │ stocks                              │─────│     scores                            │
 │ ( id (composite symbol + exchange)  │     │                                       │
-│ symbol,                             │     │  (id (composite stock_id + category), │
-│   exchange,                         │     │   symbol, exchange, category,         │
-│   timestamp)                        │     │   value, change_timestamp             │
-└─────────────────────────────────────┘     └───────────────────────────────────────┘
+│ symbol,                             │     │  (id (composite symbol + exchange     │
+│   exchange,                         │     │       + category),                    │
+│   timestamp)                        │     │   symbol, exchange, category,         │
+└─────────────────────────────────────┘     │   value, timestamp                    │
+                                            └───────────────────────────────────────┘
 ```
 The stocks table has a composite key composed of the symbol + the exchange. Other columns include the symbol, the exchange, and the timestamp
 
-The scores table has a composite key composed of the id from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp
+The scores table has a composite key composed of the symbol + exchange from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp
 
 ### 3.2 Schema (PostgreSQL)
 
@@ -63,13 +69,14 @@ Indexes:
 
 | Column           | Type         | Notes                                          |
 |------------------|--------------|------------------------------------------------|
-| `stock_id`       | TEXT         | FK → stocks.id                                 |
+| `symbol`         | TEXT         | FK → stocks (symbol, exchange)                 |
+| `exchange`       | TEXT         | FK → stocks (symbol, exchange)                 |
 | `category`       | TEXT         | NOT NULL.                                      |
 | `value`          | DOUBLE PREC. | CHECK: value BETWEEN -1.0 AND 1.0, DEFAULT 0.0 |
 | `timestamp`      | TIMESTAMPTZ  | NOT NULL                                       |
 
 Indexes:
-`id` PRIMARY KEY (`stock_id`, `category`)
+`id` PRIMARY KEY (`symbol`, `exchange`, `category`) — enforced by `UNIQUE (symbol, exchange, category)`
 composite index on `(category, value DESC)`
 
 #### Score upsert semantics
@@ -85,7 +92,7 @@ DO UPDATE SET value = EXCLUDED.value, timestamp = now();
 
 The statement never deletes score rows, so a partial update leaves categories omitted from the request with both their `value` and their `timestamp` intact. The stock-level `stocks.timestamp` is refreshed by every upsert, including one that supplies no scores. The only deletions of `scores` rows are `RemoveStock` (explicit) and `RemoveOldStocks` (retention).
 
-Range checking is layered: Kafka ingestion rejects values outside `[-1.0, 1.0]` before calling the store, and the `CHECK (value BETWEEN -1.0 AND 1.0)` constraint on `scores.value` is the database-level backstop for every path.
+Range checking is layered: broker ingestion rejects values outside `[-1.0, 1.0]` before calling the store, and the `CHECK (value BETWEEN -1.0 AND 1.0)` constraint on `scores.value` is the database-level backstop for every path.
 
 ---
 
@@ -100,15 +107,16 @@ Range checking is layered: Kafka ingestion rejects values outside `[-1.0, 1.0]` 
 | RemoveStock        | `RemoveStockRequest`          | `RemoveStockResponse`     | Delete from exchange           |
 | GetStock           | `GetStockRequest`             | `Stock`                   | All exchanges or filtered      |
 | GetStocks          | `GetStocksRequest`            | `List[Stock]`             | Gets Random List of Stocks     |
+| TopStocks          | `TopStocksRequest`            | `List[Stock]`             | Gets Top N Stocks in a category |
 
 ### Messages (key fields)
 
 ```protobuf
-message UpdateStockRequest { string symbol = 1; string exchange = 2; optional map<string, double> scores = 3; }
+message UpdateStockRequest { string symbol = 1; string exchange = 2; map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message GetStockRequest { string symbol = 1; optional string exchange = 2; }
-message GetStocksRequest { int32 limit = 1; optional string exchange = 2; optional map<string, double> min_scores = 3; optional map<string, double> max_scores = 4; }
-message RemoveStocksResponse { bool removed = 1; }
+message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
+message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; google.protobuf.Timestamp updated_at = 3; }
 ```
@@ -169,7 +177,7 @@ SELECT * FROM stocks WHERE exchange = $1 ORDER BY RANDOM()
 ```
                     ┌──────────────┐
     gRPC clients ──►│              │
-     , kafka        │ stocker-store│ PostgreSQL
+ RabbitMQ ─────────►│ stocker-store│ PostgreSQL
                     │   (Go)       │◄── Podman
                     └──────────────┘
 ```
@@ -228,27 +236,22 @@ None / Not Necessary
 
 - Pagination to avoid response limits
 
-## 12. New-Stock Output Topic
+## 12. New-Stock Output Publisher
 
-When a new `(symbol, exchange)` pair is submitted for the **first time** — i.e. the upsert in `stocks` performs an `INSERT` rather than an `UPDATE` on the unique key — the service publishes a PROTOBUF-encoded `Stock` message (package `stockstore.v1`, the same message gRPC returns) to a dedicated **output** Kafka topic.
+When a new `(symbol, exchange)` pair is submitted for the **first time** — i.e. the upsert in `stocks` performs an `INSERT` rather than an `UPDATE` on the unique key — the service publishes a PROTOBUF-encoded `Stock` message (package `stockstore.v1`, the same message gRPC returns) to a dedicated RabbitMQ **output exchange**.
+
+The full ingestion contract (topology, payload, configuration, delivery and failure semantics) lives in [`docs/design/rabbitmq-ingestion.md`](rabbitmq-ingestion.md). This section covers only the output publisher and the insert detection it relies on.
 
 ### 12.1 Purpose and scope
 
 - Emit an event for downstream consumers (e.g. a scoring service that reacts to new tickers) without them having to poll `GetStocks`.
-- Covers **all write paths into the store**: gRPC `AddStocks` / `UpdateStock`, and the Kafka input subscriber — any path that creates the row, not just Kafka-to-Kafka.
-- Does **not** re-emit for subsequent updates of an existing `(symbol, exchange)` pair. The existing input topic already carries the full upsert stream; the output topic is a *creation signal*.
+- Covers **all write paths into the store**: gRPC `AddStocks` / `UpdateStock`, and the RabbitMQ ingestion consumer — any path that creates the row.
+- Does **not** re-emit for subsequent updates of an existing `(symbol, exchange)` pair. The input exchange already carries the full upsert stream; the output exchange carries a *creation signal*.
 - After a `RemoveStock`, the next upsert of the same pair is a new INSERT and the event fires again (consistent with "new stock = new INSERT").
 
-### 12.2 Naming
+### 12.2 Output topology
 
-| Concern            | Old name | New name            | Notes                                                                                      |
-|--------------------|----------|---------------------|--------------------------------------------------------------------------------------------|
-| Inbound topic      | `KAFKA_TOPIC` | **`KAFKA_INPUT_TOPIC`** | Backwards-incompatible rename; operator updates all client env files. No alias kept.    |
-| Outbound topic     | —        | **`KAFKA_OUTPUT_TOPIC`** | New variable.                                                                            |
-| Broker list        | `KAFKA_BROKERS` | `KAFKA_BROKERS` | Unchanged; shared by the input consumer and the output producer (one cluster handles both). |
-| Consumer group     | `KAFKA_GROUP_ID` | `KAFKA_GROUP_ID` | Unchanged; applies to the input consumer only.                                            |
-
-The `KAFKA_INPUT_TOPIC` / `KAFKA_OUTPUT_TOPIC` pair matches the convention used by the partner service.
+The publisher declares only its output exchange (`RABBITMQ_OUTPUT_EXCHANGE`, type `RABBITMQ_OUTPUT_EXCHANGE_TYPE`, default `topic`, durable); consumers of that exchange own their queues and bindings. The default routing key `stock.created.v1` (`RABBITMQ_OUTPUT_ROUTING_KEY`) is deliberately different from the input routing key `stock.update.v1`: pointing the output exchange at `stock.update` with the input key would feed our own queue. The same exchange **and** routing key as the input is rejected at startup; when only the exchange names match, the service logs a warning and leaves topic-pattern overlap to the operator.
 
 ### 12.3 Detection mechanism (insert vs. update)
 
@@ -261,24 +264,24 @@ ON CONFLICT (symbol, exchange) DO UPDATE SET timestamp = now()
 RETURNING (xmax = 0) AS inserted;
 ```
 
-- `inserted = TRUE`  → newly created row; emit the output-topic message.
+- `inserted = TRUE`  → newly created row; emit the output-exchange message.
 - `inserted = FALSE` → row pre-existed; silently skip the publish.
 
 This is **one round-trip inside the existing transaction** (replaces the current `Exec` with a `QueryRow`), is atomic with the stock/score write, and is deterministic under concurrent writers (Postgres serializes conflict resolution and exactly one writer sees `xmax = 0`).
 
-**API impact:** `Store.UpdateStock` gains a second return value — the `inserted` flag. Call sites (gRPC `AddStocks` / `UpdateStock`, Kafka `handle`) adapt: only the ones that hold a `Publisher` check the flag. The store stays agnostic of *where* the event goes — it just reports the outcome of its own write.
+**API impact:** `Store.UpdateStock` returns a second value — the `inserted` flag. Call sites (gRPC `AddStocks` / `UpdateStock`, the RabbitMQ consumer `handle`) adapt: only the ones that hold a `Publisher` check the flag. The store stays agnostic of *where* the event goes — it just reports the outcome of its own write.
 
 ### 12.4 Component wiring
 
 ```
 gRPC AddStocks   ─┐
 gRPC UpdateStock ─┤        ┌─  publisher.Publish(ctx, *stockv1.Stock)  (best-effort)
-Kafka handle     ─┴─► store.UpdateStock ──► (ctx, *store.Stock, bool inserted, error)
+RabbitMQ handle  ─┴─► store.UpdateStock ──► (ctx, *store.Stock, bool inserted, error)
                                           │
-                                 inserted==true ? → emit on output topic (log-and-continue on failure)
+                                 inserted==true ? → publish to the output exchange (log-and-continue on failure)
 ```
 
-A small `Publisher` interface (in `internal/kafka/publisher.go`) exposes:
+The `Publisher` contract lives in `internal/events/publisher.go`, owned by neither the gRPC server nor the broker package:
 
 ```go
 type Publisher interface {
@@ -289,42 +292,43 @@ type Publisher interface {
 
 Two implementations:
 
-| Implementation    | Trigger                                              | `Publish` behavior                          |
-|-------------------|------------------------------------------------------|---------------------------------------------|
-| `*writerPublisher` | `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` both set   | `proto.Marshal` → `kafka.Writer.WriteMessages`. Async, buffered. |
-| `noopPublisher`   | otherwise                                            | log a one-line notice, return nil.          |
+| Implementation | When | `Publish` behavior |
+|----------------|------|--------------------|
+| `*rabbitmq.Publisher` (`internal/rabbitmq/publisher.go`) | `RABBITMQ_OUTPUT_EXCHANGE` set | `proto.Marshal` → AMQP publish with publisher confirms; on failure it logs, reconnects, and retries the same message once. |
+| `events.Noop` (`internal/events/publisher.go`) | otherwise | `Publish` and `Close` return nil; `NewPublisher` logs a one-line notice at construction. |
 
-`NewPublisher(brokers []string, topic string) Publisher` returns the appropriate impl; `cmd/main.go` constructs it **once** and injects it into `grpc.NewServer(st, publisher)` and `kafka.New(cfg, store, publisher)`.
+`rabbitmq.NewPublisher(cfg)` returns the appropriate implementation; `cmd/main.go` constructs it **once** and injects it into `grpc.NewServer(st, publisher)` and the consumer (`rabbitmq.New(cfg, st, publisher)`). Both constructors replace a nil publisher with `events.Noop{}`.
 
 Wiring in `cmd/main.go`:
 
-1. Read `KAFKA_BROKERS` (shared by both directions), `KAFKA_INPUT_TOPIC` (renamed), `KAFKA_GROUP_ID` (input consumer), and `KAFKA_OUTPUT_TOPIC` (output producer).
-2. Construct the publisher **once**: `publisher := kafka.NewPublisher(envList("KAFKA_BROKERS"), os.Getenv("KAFKA_OUTPUT_TOPIC"))`; `defer publisher.Close()` after the gRPC `GracefulStop`.
-3. Hand it to `grpc.NewServer(st, publisher)` and `kafka.New(cfg, st, publisher)`.
-4. The input consumer remains a **no-op** unless both `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set — the output publisher is a **no-op** unless both `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set. They are **independent**: enable input only, output only, both, or neither.
+1. `rabbitmq.LoadConfig()` reads the RabbitMQ settings; the consumer and the output publisher share `RABBITMQ_URL`.
+2. Construct the publisher **once**: `publisher, err := rabbitmq.NewPublisher(cfg)`; `publisher.Close()` runs after the gRPC `GracefulStop`.
+3. Hand it to `grpc.NewServer(st, publisher)` and to `runRabbitMQConsumer(ctx, st, publisher, cfg)`.
+4. Ingestion is disabled only by an explicitly empty `RABBITMQ_URL`; the output publisher is **disabled** unless `RABBITMQ_OUTPUT_EXCHANGE` is non-empty. Output requires a non-empty `RABBITMQ_URL` (a startup error otherwise), so the supported modes are ingestion only or ingestion plus output — never output alone.
 
 ### 12.5 Failure semantics
 
-- A **failure to publish** is **logged at error level** and the handler **returns success** to the caller. Rationale: the DB write is the authoritative state; the output topic is a best-effort fan-out. Retries, DLQs, and re-sends are out of scope — the consumer is expected to be tolerant (poll or use idempotent handlers). Making a Kafka publish failure fatal to the primary write is disproportionate to the event's importance.
+- A **failure to publish** is **logged and swallowed**: the gRPC handlers return success and the consumer still acknowledges the delivery. Rationale: the DB write is the authoritative state; the output exchange is a best-effort fan-out. A publish failure never fails the primary write (the gRPC response or the ingestion ack); retries, dead-letter queues, and re-sends are out of scope — the downstream consumer is expected to be tolerant.
+- Inside `Publish`, a failed or unconfirmed publish tears down the connection, reconnects, and retries the **same message once**; a second failure is returned to the caller, which logs it (`rabbitmq: failed to publish new stock %s/%s: %v` on the ingestion path). A cancelled context prevents both dialing and the retry.
 - A **failure in the store write** (the `UpdateStock` error path) returns the error to the caller and **skips the publish** entirely — no point emitting an event for a stock that was not actually written.
-- `Publish` is **synchronous** (blocks briefly) to keep ordering simple. For high volume, the underlying writer is `Async: true` so the cost is a queue push, not a network round-trip.
-- `Close` is called in reverse order (after gRPC `GracefulStop`) on shutdown, so in-flight messages are flushed.
+- `Publish` is **synchronous**: it waits for the broker's publisher confirm before returning, so a `nil` error means the broker accepted the message.
+- `Close` runs after the gRPC `GracefulStop` on shutdown; it is idempotent and releases the publisher's channel and connection.
 
 ### 12.6 Configuration
 
-| Variable            | Required | Default          | Format                                              | Purpose                                                            |
-|---------------------|----------|------------------|-----------------------------------------------------|--------------------------------------------------------------------|
-| `GRPC_PORT`         | No       | `3500`           | Decimal TCP port, `1`–`65535`                       | Port the gRPC server listens on. Invalid values abort startup (new). |
-| `DATABASE_URL`      | Yes      | `postgres://…`   | PostgreSQL DSN                                      | The single Postgres connection string (unchanged).                 |
-| `STOCK_TTL`         | No       | `720h`           | Go duration string; `0` disables                    | Retention window for stale-stock auto-removal (unchanged).         |
-| `KAFKA_BROKERS`     | No       | —                | Comma-separated `host:port` list                    | Shared between the input consumer and the output producer.         |
-| `KAFKA_INPUT_TOPIC` | No       | —                | Topic name (e.g. `stockers`)                        | Topic to **consume** stock events from (renamed from `KAFKA_TOPIC`). |
-| `KAFKA_GROUP_ID`    | No       | `stocker-store`  | Consumer group id                                   | Kafka consumer group for the input subscriber (unchanged).         |
-| `KAFKA_OUTPUT_TOPIC`| No       | —                | Topic name (e.g. `stockers-new`)                    | Topic to **publish** new-stock `Stock` messages to (new).          |
+| Variable                       | Required | Default                          | Format                                | Purpose                                                                                          |
+|--------------------------------|----------|----------------------------------|---------------------------------------|--------------------------------------------------------------------------------------------------|
+| `GRPC_PORT`                    | No       | `3500`                           | Decimal TCP port, `1`–`65535`         | Port the gRPC server listens on. Invalid values abort startup.                                   |
+| `DATABASE_URL`                 | Yes      | `postgres://…`                   | PostgreSQL DSN                        | The single Postgres connection string.                                                           |
+| `STOCK_TTL`                    | No       | `720h`                           | Go duration string; `0` disables      | Retention window for stale-stock auto-removal.                                                   |
+| `RABBITMQ_URL`                 | No       | `amqp://guest:guest@192.168.1.48:5672/` | `amqp://` / `amqps://` URI            | Broker connection shared by the consumer and the output publisher; explicitly empty disables ingestion (and therefore output). |
+| `RABBITMQ_OUTPUT_EXCHANGE`     | No       | unset (output **disabled**)      | Exchange name                         | Output exchange; publishing happens only when this is non-empty.                                 |
+| `RABBITMQ_OUTPUT_EXCHANGE_TYPE`| No       | `topic`                          | `direct`, `topic`, `fanout`, `headers`| Exchange type used when output is enabled.                                                       |
+| `RABBITMQ_OUTPUT_ROUTING_KEY`  | No       | `stock.created.v1`               | Routing key                           | Key the new-stock event is published with.                                                       |
 
-- Kafka **input** is a **no-op** unless **both** `KAFKA_BROKERS` and `KAFKA_INPUT_TOPIC` are set.
-- Kafka **output** is a **no-op** unless **both** `KAFKA_BROKERS` and `KAFKA_OUTPUT_TOPIC` are set.
-- Input and output are **independent** — enable either, both, or neither.
+- The output publisher is a **no-op** (`events.Noop`) unless `RABBITMQ_OUTPUT_EXCHANGE` is set to a non-empty value; `NewPublisher` logs a one-line notice at startup.
+- Output requires a non-empty `RABBITMQ_URL`, and the same exchange **and** routing key as the input is rejected at startup (self-feeding loop). Enabling output therefore implies ingestion is enabled; ingestion-only (output disabled) is the default.
+- Ingestion settings (`RABBITMQ_EXCHANGE`, `RABBITMQ_EXCHANGE_TYPE`, `RABBITMQ_ROUTING_KEY`, `RABBITMQ_QUEUE`, `RABBITMQ_PREFETCH`) are documented in [`docs/design/rabbitmq-ingestion.md`](rabbitmq-ingestion.md) §4.
 - `GRPC_PORT` is validated before the listener is created; an unset or empty value means `3500`. An unparseable or out-of-range value is fatal at startup rather than silently defaulted.
 
 ### 12.7 Message format
@@ -340,19 +344,18 @@ Serialized with `proto.Marshal` (no JSON, no compression). Consumers decode with
 
 ### 12.8 Testing notes
 
-- **Store:** new `TestUpdateStockInsertedFlag` asserts the `inserted` flag is `true` on the first write to a unique `(symbol, exchange)` pair and `false` on subsequent writes to the same pair. Uses the existing `testStore(t)` helper (skips when `DATABASE_URL` unset).
-- **Kafka publisher:** no-op branch (neither `brokers` nor `topic` set → `Publish` returns nil, `Close` returns nil, no side effects); real-writer branch (type-asserts the impl; `Publish(nil)` returns a defensive error).
-- **Kafka client / gRPC server:** `fakePublisher` test double records `Publish` calls; tests assert (a) publisher is called exactly once when `inserted=true`, (b) publisher is NOT called when `inserted=false`, (c) publisher NOT called when the store write itself errors, (d) a publish failure does NOT propagate as a handler error (log-and-continue).
-- **Wiring:** covered by code review — `cmd/main.go` constructs one publisher and injects it into both `grpc.NewServer` and `kafka.New`.
+- **Store:** `TestUpdateStockInsertedFlag` asserts the `inserted` flag is `true` on the first write to a unique `(symbol, exchange)` pair and `false` on subsequent writes to the same pair. Uses the existing `testStore(t)` helper (skips when `DATABASE_URL` unset).
+- **RabbitMQ publisher** (`internal/rabbitmq/publisher_test.go`): disabled configuration returns `events.Noop` without dialing; exact exchange-declaration flags; message properties (content type, persistent delivery, `message_id` = symbol, `type` = output routing key, `symbol`/`exchange` headers, body round-trip); confirms enabled and awaited; a negative confirm, two consecutive failures, `Publish(nil)`, and publishing after `Close` are errors; URL parse errors redact credentials; a cancelled context skips dialing and the retry.
+- **Consumer / gRPC server:** `fakePublisher` test doubles record `Publish` calls; tests assert (a) the publisher is called exactly once when `inserted=true` (`TestUpdateStock_PublishesOnNewStock`, `TestAddStocks_PublishesPerNewStock`, `TestProcessDelivery_PublishesOnlyOnInsert`), (b) it is NOT called when `inserted=false` (`TestUpdateStock_DoesNotPublishOnUpdate`), and (c) a publish failure does NOT propagate as a handler error or prevent the ack (log-and-continue: `TestUpdateStock_PublishErrorDoesNotFailResponse`, `TestProcessDelivery_PublishFailureIsLoggedAndAcked`). A store write failure returns early and never reaches the publish call.
+- **Wiring:** covered by code review — `cmd/main.go` constructs one publisher and injects it into both `grpc.NewServer` and the RabbitMQ consumer.
 
 ### 12.9 Non-goals
 
 - No new proto schema / new generated Go package.
-- No per-score or per-category events on the output topic — the whole `Stock` is the message (the event is "a stock was created"; its scores are part of the snapshot).
-- No retry queue or DLQ; a log line is the acknowledgment.
+- No per-score or per-category events on the output exchange — the whole `Stock` is the message (the event is "a stock was created"; its scores are part of the snapshot).
+- No dead-letter queue and no retry queue; a log line is the acknowledgment. Dead-lettering remains an operator policy on the ingestion queue (see [`docs/design/rabbitmq-ingestion.md`](rabbitmq-ingestion.md)).
 - No re-emission for *same* `(symbol, exchange)` across refreshes — only on the first INSERT.
-- No backward compatibility for the `KAFKA_TOPIC` → `KAFKA_INPUT_TOPIC` rename.
-- No change to the `KAFKA_GROUP_ID` or `KAFKA_BROKERS` semantics.
+- No change to the ingestion contract documented in [`docs/design/rabbitmq-ingestion.md`](rabbitmq-ingestion.md).
 
 ## 13. Top Stocks
 

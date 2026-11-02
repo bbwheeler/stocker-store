@@ -1,6 +1,8 @@
 [Unit]
+# The RabbitMQ broker is remote, so no broker unit is ordered here; the
+# consumer reconnects with capped exponential backoff if it is unreachable.
 After=network-online.target
-After=kafka-broker-1.container
+Wants=network-online.target
 
 [Container]
 Image=git.wheeli.ca/brian/stocker-store:latest

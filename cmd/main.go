@@ -13,12 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"git.wheeli.ca/brian/stocker-store/internal/events"
 	"git.wheeli.ca/brian/stocker-store/internal/grpc"
-	"git.wheeli.ca/brian/stocker-store/internal/kafka"
+	"git.wheeli.ca/brian/stocker-store/internal/rabbitmq"
 	"git.wheeli.ca/brian/stocker-store/internal/store"
 )
 
-// Store is the subset of the stock store needed to ingest kafka messages.
+// stockStore is the subset of the stock store needed to ingest broker messages.
 type stockStore interface {
 	UpdateStock(ctx context.Context, symbol, exchange string, scores map[string]float64) (*store.Stock, bool, error)
 }
@@ -49,12 +50,19 @@ func main() {
 	}
 	defer st.Close()
 
-	// Construct the publisher once; it is a no-op unless both KAFKA_BROKERS
-	// and KAFKA_OUTPUT_TOPIC are set. It is shared by the gRPC server and the
-	// kafka input subscriber so that *any* path that creates a new stock emits
-	// the event.
-	brokers := envList("KAFKA_BROKERS")
-	publisher := kafka.NewPublisher(brokers, os.Getenv("KAFKA_OUTPUT_TOPIC"))
+	cfg, err := rabbitmq.LoadConfig()
+	if err != nil {
+		log.Fatalf("rabbitmq config: %v", err)
+	}
+
+	// Construct the publisher once; it is a no-op unless
+	// RABBITMQ_OUTPUT_EXCHANGE is set. It is shared by the gRPC server and the
+	// rabbitmq consumer so that *any* path that creates a new stock emits the
+	// event.
+	publisher, err := rabbitmq.NewPublisher(cfg)
+	if err != nil {
+		log.Fatalf("rabbitmq publisher: %v", err)
+	}
 
 	server := grpc.NewServer(st, publisher)
 
@@ -79,8 +87,8 @@ func main() {
 	// or a configuration error; a non-nil return is misconfiguration and
 	// must be fatal so systemd's Restart=always surfaces it instead of
 	// leaving a healthy-looking process with dead ingestion.
-	if err := runKafkaSubscriber(ctx, st, publisher); err != nil {
-		log.Fatalf("kafka subscriber: %v", err)
+	if err := runRabbitMQConsumer(ctx, st, publisher, cfg); err != nil {
+		log.Fatalf("rabbitmq consumer: %v", err)
 	}
 
 	<-ctx.Done()
@@ -139,35 +147,14 @@ func runRetention(ctx context.Context, st *store.Store) {
 	}
 }
 
-func runKafkaSubscriber(ctx context.Context, st stockStore, publisher kafka.Publisher) error {
-	brokers := envList("KAFKA_BROKERS")
-	topic := os.Getenv("KAFKA_INPUT_TOPIC")
-	if len(brokers) == 0 || topic == "" {
-		log.Printf("KAFKA_BROKERS and KAFKA_INPUT_TOPIC required for kafka ingestion")
+func runRabbitMQConsumer(ctx context.Context, st stockStore, publisher events.Publisher, cfg rabbitmq.Config) error {
+	if !cfg.IngestionEnabled() {
+		log.Printf("rabbitmq: ingestion disabled (RABBITMQ_URL explicitly empty)")
 		return nil
 	}
-
-	groupID := os.Getenv("KAFKA_GROUP_ID")
-	if groupID == "" {
-		groupID = "stocker-store"
-	}
-
-	client := kafka.New(kafka.Config{
-		Brokers: brokers,
-		Topic:   topic,
-		GroupID: groupID,
-	}, st, publisher)
-
-	log.Printf("kafka subscriber: consuming %q via %s", topic, strings.Join(brokers, ","))
-	return client.Run(ctx)
-}
-
-func envList(name string) []string {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return nil
-	}
-	return strings.Split(raw, ",")
+	log.Printf("rabbitmq: consuming queue=%q exchange=%q routing_key=%q prefetch=%d",
+		cfg.Queue, cfg.Exchange, cfg.RoutingKey, cfg.Prefetch)
+	return rabbitmq.New(cfg, st, publisher).Run(ctx)
 }
 
 // databaseDSN builds the Postgres DSN handed to the store. A full DSN
