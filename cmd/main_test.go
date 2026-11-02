@@ -4,7 +4,18 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"git.wheeli.ca/brian/stocker-store/internal/rabbitmq"
 )
+
+func TestRunRabbitMQConsumerDisabled(t *testing.T) {
+	// An explicitly empty URL disables ingestion, so the consumer must return
+	// before touching the store or the broker. Nil dependencies prove it.
+	cfg := rabbitmq.Config{URL: ""}
+	if err := runRabbitMQConsumer(t.Context(), nil, nil, cfg); err != nil {
+		t.Fatalf("runRabbitMQConsumer() with disabled ingestion = %v, want nil", err)
+	}
+}
 
 func TestParsePort(t *testing.T) {
 	const wantDefault = 3500
