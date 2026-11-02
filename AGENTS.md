@@ -14,7 +14,7 @@
 * If request limits are less than the total, a random set will be provided
 * Self-hostable using Podman Quadlets
 * Remove stale stocks after a configurable duration
-* Receive stocks through Kafka
+* Receive stocks through RabbitMQ
 * Each score has a last-updated timestamp (set by the server on write, reads back the stored value)
 * simple, concise
 
@@ -23,7 +23,7 @@
 * gRPC
 * PostgreSQL
 * Go
-* Kafka
+* RabbitMQ
 
 ## Tools
 

@@ -34,7 +34,7 @@ No changes to `internal/`, `proto/`, `deploy/quadlet/*`, `go.mod`, or `Makefile`
 
 ## Design decisions (summary, with rationale)
 
-1. **Variable name — `GRPC_PORT`.** Matches the existing flat `UPPER_SNAKE` scheme (`STOCK_TTL`, `KAFKA_OUTPUT_TOPIC`) and names the thing the operator cares about (the port), not the address. Rejected: `LISTEN_ADDR`/`GRPC_ADDR` (implies host control, which is a non-goal), `PORT` (too generic, collides with platform conventions and with the container/PaaS ecosystems that inject it for HTTP).
+1. **Variable name — `GRPC_PORT`.** Matches the existing flat `UPPER_SNAKE` scheme (`STOCK_TTL`, `RABBITMQ_OUTPUT_EXCHANGE`) and names the thing the operator cares about (the port), not the address. Rejected: `LISTEN_ADDR`/`GRPC_ADDR` (implies host control, which is a non-goal), `PORT` (too generic, collides with platform conventions and with the container/PaaS ecosystems that inject it for HTTP).
 
 2. **Default `3500`, applied when the variable is unset or empty.** An empty string is treated exactly like unset. This is the compatibility guarantee: no deployment changes.
 
@@ -56,20 +56,20 @@ No changes to `internal/`, `proto/`, `deploy/quadlet/*`, `go.mod`, or `Makefile`
 - Configurable bind host / interface (e.g. `GRPC_HOST`, `0.0.0.0` vs `127.0.0.1`). The listener stays `:<port>` (all interfaces).
 - Any config file, flag parser, or `GRPC_ADDR`-style combined host:port value.
 - TLS, mTLS, reflection, or any other gRPC server option.
-- Changing the port used by anything else (Postgres/Kafka are client-side, configured by their own URLs).
+- Changing the port used by anything else (Postgres and the message broker are client-side, configured by their own URLs).
 - Backward compatibility shims: there is no previous port variable to honour.
 
 ---
 
 ## Configuration table row
 
-### `docs/design.md` §12.6 — add as the first data row (service-wide rows before Kafka rows)
+### `docs/design.md` §12.6 — add as the first data row (service-wide rows before the RabbitMQ output rows)
 
 ```markdown
 | `GRPC_PORT`         | No       | `3500`           | Decimal TCP port, `1`–`65535`                       | Port the gRPC server listens on. Invalid values abort startup (new). |
 ```
 
-Plus one bullet under the existing bullet list in §12.6, after the Kafka bullets (which stay untouched):
+Plus one bullet under the existing bullet list in §12.6, after the RabbitMQ bullets (which stay untouched):
 
 ```markdown
 - `GRPC_PORT` is validated before the listener is created; an unset or empty value means `3500`. An unparseable or out-of-range value is fatal at startup rather than silently defaulted.
@@ -165,7 +165,7 @@ Each step is independently verifiable; run `gofmt -l .` after any Go step (it mu
 ### Step 4 — Document the variable in `docs/design.md`
 
 **Files:** modify `docs/design.md` §12.6 (around line 297).
-**Do:** add the `GRPC_PORT` table row exactly as given in "Configuration table row" above, plus the validation bullet after the existing Kafka bullets. Touch nothing else in the file.
+**Do:** add the `GRPC_PORT` table row exactly as given in "Configuration table row" above, plus the validation bullet after the existing RabbitMQ bullets. Touch nothing else in the file.
 **Acceptance:** `grep -n GRPC_PORT docs/design.md` shows both the row and the bullet; the markdown table still renders (the row has five columns, same as its neighbours).
 
 ### Step 5 — Update README configuration docs
