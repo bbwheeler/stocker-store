@@ -42,14 +42,15 @@ configuration, and delivery semantics — is documented in
 ┌─────────────────────────────────────┐     ┌───────────────────────────────────────┐
 │ stocks                              │─────│     scores                            │
 │ ( id (composite symbol + exchange)  │     │                                       │
-│ symbol,                             │     │  (id (composite stock_id + category), │
-│   exchange,                         │     │   symbol, exchange, category,         │
-│   timestamp)                        │     │   value, change_timestamp             │
-└─────────────────────────────────────┘     └───────────────────────────────────────┘
+│ symbol,                             │     │  (id (composite symbol + exchange     │
+│   exchange,                         │     │       + category),                    │
+│   timestamp)                        │     │   symbol, exchange, category,         │
+└─────────────────────────────────────┘     │   value, timestamp                    │
+                                            └───────────────────────────────────────┘
 ```
 The stocks table has a composite key composed of the symbol + the exchange. Other columns include the symbol, the exchange, and the timestamp
 
-The scores table has a composite key composed of the id from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp
+The scores table has a composite key composed of the symbol + exchange from the stocks table + the category. Other columns include the symbol, exchange, category, value, timestamp
 
 ### 3.2 Schema (PostgreSQL)
 
@@ -68,13 +69,14 @@ Indexes:
 
 | Column           | Type         | Notes                                          |
 |------------------|--------------|------------------------------------------------|
-| `stock_id`       | TEXT         | FK → stocks.id                                 |
+| `symbol`         | TEXT         | FK → stocks (symbol, exchange)                 |
+| `exchange`       | TEXT         | FK → stocks (symbol, exchange)                 |
 | `category`       | TEXT         | NOT NULL.                                      |
 | `value`          | DOUBLE PREC. | CHECK: value BETWEEN -1.0 AND 1.0, DEFAULT 0.0 |
 | `timestamp`      | TIMESTAMPTZ  | NOT NULL                                       |
 
 Indexes:
-`id` PRIMARY KEY (`stock_id`, `category`)
+`id` PRIMARY KEY (`symbol`, `exchange`, `category`) — enforced by `UNIQUE (symbol, exchange, category)`
 composite index on `(category, value DESC)`
 
 #### Score upsert semantics
@@ -105,15 +107,16 @@ Range checking is layered: broker ingestion rejects values outside `[-1.0, 1.0]`
 | RemoveStock        | `RemoveStockRequest`          | `RemoveStockResponse`     | Delete from exchange           |
 | GetStock           | `GetStockRequest`             | `Stock`                   | All exchanges or filtered      |
 | GetStocks          | `GetStocksRequest`            | `List[Stock]`             | Gets Random List of Stocks     |
+| TopStocks          | `TopStocksRequest`            | `List[Stock]`             | Gets Top N Stocks in a category |
 
 ### Messages (key fields)
 
 ```protobuf
-message UpdateStockRequest { string symbol = 1; string exchange = 2; optional map<string, double> scores = 3; }
+message UpdateStockRequest { string symbol = 1; string exchange = 2; map<string, double> scores = 3; }
 message RemoveStockRequest { string symbol = 1; string exchange = 2; }
 message GetStockRequest { string symbol = 1; optional string exchange = 2; }
-message GetStocksRequest { int32 limit = 1; optional string exchange = 2; optional map<string, double> min_scores = 3; optional map<string, double> max_scores = 4; }
-message RemoveStocksResponse { bool removed = 1; }
+message GetStocksRequest { int32 limit = 1; optional string exchange = 2; map<string, double> min_scores = 3; map<string, double> max_scores = 4; }
+message RemoveStockResponse { bool removed = 1; }
 message Stock { string symbol = 1; string exchange = 2; repeated ScoreEntry scores = 3; }
 message ScoreEntry { string category = 1; double value = 2; google.protobuf.Timestamp updated_at = 3; }
 ```
