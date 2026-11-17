@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stocker-store
+  namespace: stocker
+  labels:
+    app.kubernetes.io/name: stocker-store
+    app.kubernetes.io/part-of: stocker
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stocker-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stocker-store
+        app.kubernetes.io/part-of: stocker
+    spec:
+      imagePullSecrets:
+        - name: wheeli-registry
+      containers:
+        - name: stocker-store
+          image: git.wheeli.ca/brian/stocker-store:latest
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 3500
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: stocker-store-config
+            - secretRef:
+                name: stocker-store-env
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            tcpSocket:
+              port: 3500
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3500
+            initialDelaySeconds: 10
+            periodSeconds: 10
