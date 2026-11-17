@@ -8,8 +8,6 @@ metadata:
     app.kubernetes.io/part-of: stocker
 data:
   GRPC_PORT: "3500"
-  S3_REGION: us-east-1
-  S3_BUCKET: ""
   STOCK_TTL: 720h
   RABBITMQ_EXCHANGE: stock.update
   RABBITMQ_EXCHANGE_TYPE: topic
