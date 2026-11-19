@@ -32,8 +32,6 @@ spec:
       labels:
         app: stocker-store
     spec:
-      imagePullSecrets:
-        - name: wheeli-registry
       containers:
         - name: stocker-store
           image: git.wheeli.ca/brian/stocker-store:latest
